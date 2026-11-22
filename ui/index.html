@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google AI Overlay</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #141b2d;
+      --input-bg: #1e293b;
+      --border: rgba(255, 255, 255, 0.08);
+      --border-focus: #3b82f6;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-subtle: #64748b;
+      --accent: #3b82f6;
+      --accent-gradient: linear-gradient(135deg, #4285F4 0%, #9B51E0 50%, #EA4335 100%);
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 20px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+    }
+
+    /* Draggable Window Header */
+    .drag-header {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      cursor: grab;
+      -webkit-app-region: drag;
+    }
+
+    .app-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    .ai-sparkle {
+      width: 14px;
+      height: 14px;
+      background: var(--accent-gradient);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z'/%3E%3C/svg%3E") no-repeat center / contain;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z'/%3E%3C/svg%3E") no-repeat center / contain;
+      display: inline-block;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      -webkit-app-region: no-drag;
+    }
+
+    .lang-pill {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .lang-pill:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .lang-pill span.active {
+      color: #60a5fa;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-subtle);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .close-btn:hover {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+    }
+
+    /* Main Container */
+    .main-container {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      gap: 20px;
+      overflow-y: auto;
+    }
+
+    /* Search Bar */
+    .search-bar-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0 16px;
+      height: 60px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .search-bar-wrap:focus-within {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25), 0 8px 30px rgba(0, 0, 0, 0.4);
+    }
+
+    .search-icon {
+      width: 22px;
+      height: 22px;
+      color: var(--text-muted);
+      margin-right: 14px;
+      flex-shrink: 0;
+    }
+
+    .search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      font-size: 17px;
+      color: var(--text);
+      font-family: inherit;
+      user-select: text;
+    }
+
+    .search-input::placeholder {
+      color: var(--text-subtle);
+    }
+
+    .search-shortcuts {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .shortcut-badge {
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+    }
+
+    /* Suggestions & Status Section */
+    .hero-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      text-align: center;
+      gap: 16px;
+      padding: 20px 0;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      background: rgba(66, 133, 244, 0.1);
+      border: 1px solid rgba(66, 133, 244, 0.2);
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #93c5fd;
+    }
+
+    .hero-title {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+
+    .hero-subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      max-width: 480px;
+      line-height: 1.5;
+    }
+
+    .suggestions-list {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 10px;
+      max-width: 600px;
+    }
+
+    .suggestion-chip {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 13px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .suggestion-chip:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.15);
+      transform: translateY(-1px);
+    }
+
+    /* Footer hints */
+    .footer-bar {
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid var(--border);
+      background: rgba(10, 15, 28, 0.4);
+      font-size: 12px;
+      color: var(--text-subtle);
+    }
+
+    .footer-hints {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .footer-hint-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Window Header Drag Area -->
+  <div class="drag-header">
+    <div class="app-brand">
+      <span class="ai-sparkle"></span>
+      <span id="txt-app-title">Google AI Overlay</span>
+    </div>
+    <div class="header-actions">
+      <button class="lang-pill" id="lang-btn" onclick="toggleLanguage()" title="Switch Language / Сменить язык">
+        <span id="lang-ru-label">RU</span>
+        <span style="opacity: 0.3;">/</span>
+        <span id="lang-en-label" class="active">EN</span>
+      </button>
+      <button class="close-btn" onclick="hideWindow()" title="Close / Скрыть (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Area -->
+  <div class="main-container">
+    <div class="search-bar-wrap">
+      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input 
+        type="text" 
+        id="search-input" 
+        class="search-input" 
+        placeholder="Ask Google AI anything..." 
+        autocomplete="off" 
+        autofocus 
+      />
+      <div class="search-shortcuts">
+        <span class="shortcut-badge">↵ Enter</span>
+      </div>
+    </div>
+
+    <!-- Empty State Content -->
+    <div class="hero-section">
+      <div class="hero-badge">
+        <span class="ai-sparkle"></span>
+        <span>Google AI Overview • Zero API Keys</span>
+      </div>
+      <h2 class="hero-title" id="txt-empty-title">Clean & Instant Google Search</h2>
+      <p class="hero-subtitle" id="txt-empty-subtitle">
+        Press Enter to search. Google AI Overview and key links will appear in this minimalist window.
+      </p>
+
+      <div class="suggestions-list" id="suggestions-container">
+        <!-- Will be populated dynamically based on language -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Bar -->
+  <div class="footer-bar">
+    <div class="footer-hints">
+      <span class="footer-hint-item">
+        <span class="shortcut-badge">Alt + Space</span>
+        <span id="txt-summon-hint">Summon</span>
+      </span>
+      <span class="footer-hint-item">
+        <span class="shortcut-badge">Esc</span>
+        <span id="txt-hide-hint">Hide</span>
+      </span>
+    </div>
+    <div style="font-size: 11px; color: var(--text-subtle);">
+      Autonomous Open Source
+    </div>
+  </div>
+
+  <script>
+    let currentLang = 'en';
+
+    const suggestionsData = {
+      en: [
+        "Explain quantum computing simply",
+        "Python list comprehension examples",
+        "What is the James Webb telescope discovering?",
+        "Difference between Docker and Podman"
+      ],
+      ru: [
+        "Объясни квантовые вычисления простыми словами",
+        "Примеры генераторов списков в Python",
+        "Что открыл телескоп Джеймс Уэбб?",
+        "В чем разница между Docker и Podman?"
+      ]
+    };
+
+    function updateUIStrings(strings) {
+      document.getElementById('search-input').placeholder = strings.placeholder || 'Ask Google AI...';
+      document.getElementById('txt-empty-title').innerText = strings.empty_title || 'Google AI Spotlight';
+      document.getElementById('txt-empty-subtitle').innerText = strings.empty_subtitle || '';
+      
+      const isRu = currentLang === 'ru';
+      document.getElementById('lang-ru-label').className = isRu ? 'active' : '';
+      document.getElementById('lang-en-label').className = !isRu ? 'active' : '';
+
+      document.getElementById('txt-summon-hint').innerText = isRu ? 'Вызов' : 'Summon';
+      document.getElementById('txt-hide-hint').innerText = isRu ? 'Скрыть' : 'Hide';
+
+      // Render suggestions
+      const list = suggestionsData[currentLang] || suggestionsData.en;
+      const container = document.getElementById('suggestions-container');
+      container.innerHTML = '';
+      list.forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'suggestion-chip';
+        chip.innerText = item;
+        chip.onclick = () => {
+          document.getElementById('search-input').value = item;
+          triggerSearch();
+        };
+        container.appendChild(chip);
+      });
+    }
+
+    function triggerSearch() {
+      const q = document.getElementById('search-input').value.trim();
+      if (!q) return;
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.search(q, currentLang);
+      }
+    }
+
+    function toggleLanguage() {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.toggle_language().then(res => {
+          currentLang = res.lang;
+          updateUIStrings(res.strings);
+        });
+      } else {
+        currentLang = currentLang === 'en' ? 'ru' : 'en';
+        updateUIStrings(currentLang === 'ru' ? {
+          placeholder: "Спросите Google AI о чём угодно...",
+          empty_title: "Google AI Оверлей",
+          empty_subtitle: "Мгновенный поиск и AI Overview в чистом окне без лишнего мусора."
+        } : {
+          placeholder: "Ask Google AI anything...",
+          empty_title: "Clean & Instant Google Search",
+          empty_subtitle: "Press Enter to search. Google AI Overview and key links will appear in this minimalist window."
+        });
+      }
+    }
+
+    function hideWindow() {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.hide_window();
+      }
+    }
+
+    // Input listeners
+    const input = document.getElementById('search-input');
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        triggerSearch();
+      } else if (e.key === 'Escape') {
+        hideWindow();
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        hideWindow();
+      }
+    });
+
+    window.addEventListener('pywebviewready', () => {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.get_initial_state().then(state => {
+          currentLang = state.lang;
+          updateUIStrings(state.strings);
+        });
+      }
+    });
+  </script>
+</body>
+</html>
