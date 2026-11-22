@@ -7,7 +7,6 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
-#include <windowsx.h>
 #include <initguid.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -30,7 +29,6 @@ static NOTIFYICONDATAW g_nid = {};
 static bool g_isVisible = false;
 static std::wstring g_currentLang = L"en";
 static std::wstring g_currentQuery = L"";
-static int g_currentOpacity = 96;
 
 // WebView2 pointers
 static ICoreWebView2Controller* g_controller = nullptr;
@@ -107,7 +105,7 @@ public:
     }
 };
 
-// JSON Field Extractor
+// Robust JSON Field Extractor
 std::wstring ExtractJsonField(const std::wstring& json, const std::wstring& key) {
     std::wstring searchKey = L"\"" + key + L"\":";
     size_t pos = json.find(searchKey);
@@ -208,15 +206,7 @@ bool IsAutostartEnabled() {
     return enabled;
 }
 
-// Opacity & Size
-void SetWindowOpacity(int percent) {
-    if (percent < 50) percent = 50;
-    if (percent > 100) percent = 100;
-    g_currentOpacity = percent;
-    BYTE alpha = (BYTE)((percent * 255) / 100);
-    SetLayeredWindowAttributes(g_hWnd, 0, alpha, LWA_ALPHA);
-}
-
+// Window Size Presets
 void SetWindowPresetSize(int w, int h) {
     RECT rc;
     GetWindowRect(g_hWnd, &rc);
@@ -224,7 +214,7 @@ void SetWindowPresetSize(int w, int h) {
     int screenH = GetSystemMetrics(SM_CYSCREEN);
     int x = (screenW - w) / 2;
     int y = (screenH - h) / 2;
-    SetWindowPos(g_hWnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(g_hWnd, nullptr, x, y, w, h, SWP_NOZORDER);
 }
 
 // Forward declarations
@@ -250,7 +240,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       --text: #f8fafc;
       --text-muted: #94a3b8;
       --text-subtle: #64748b;
-      --glow-halo: 0 0 0 1px rgba(96, 165, 250, 0.4), 0 0 35px -5px rgba(59, 130, 246, 0.3), 0 25px 60px -15px rgba(0, 0, 0, 0.9);
+      --glow-halo: 0 0 0 1px rgba(96, 165, 250, 0.45), 0 0 35px -5px rgba(59, 130, 246, 0.35), 0 25px 60px -15px rgba(0, 0, 0, 0.9);
       --radius: 20px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
@@ -264,18 +254,18 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       flex-direction: column;
       border-radius: var(--radius);
       box-shadow: var(--glow-halo);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.12);
       position: relative;
     }
 
     /* Top Drag Header */
     .header-bar {
-      height: 44px;
+      height: 46px;
       padding: 0 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(18, 25, 43, 0.65);
+      background: rgba(18, 25, 43, 0.7);
       backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border);
       cursor: grab;
@@ -287,14 +277,14 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 13px;
+      font-size: 13.5px;
       font-weight: 600;
       letter-spacing: -0.2px;
       pointer-events: none;
     }
     .sparkle {
-      width: 14px;
-      height: 14px;
+      width: 15px;
+      height: 15px;
       background: linear-gradient(135deg, #4285F4 0%, #9B51E0 50%, #EA4335 100%);
       -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z'/%3E%3C/svg%3E") no-repeat center / contain;
       mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z'/%3E%3C/svg%3E") no-repeat center / contain;
@@ -309,8 +299,8 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border: 1px solid var(--border);
       color: var(--text-muted);
       border-radius: 8px;
-      width: 28px;
-      height: 28px;
+      width: 30px;
+      height: 30px;
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -328,13 +318,13 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border-radius: 8px;
       font-size: 11px;
       font-weight: 600;
-      padding: 4px 10px;
+      padding: 0 10px;
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 4px;
       transition: all 0.15s ease;
-      height: 28px;
+      height: 30px;
     }
     .lang-chip:hover {
       background: rgba(255, 255, 255, 0.12);
@@ -346,8 +336,8 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border: none;
       color: var(--text-subtle);
       cursor: pointer;
-      width: 28px;
-      height: 28px;
+      width: 30px;
+      height: 30px;
       border-radius: 6px;
       display: flex;
       align-items: center;
@@ -373,7 +363,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 0 18px;
-      height: 60px;
+      height: 62px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
@@ -402,12 +392,14 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 4px 8px;
+      padding: 5px 10px;
       font-size: 11px;
+      font-weight: 500;
       color: var(--text-muted);
       cursor: pointer;
+      transition: all 0.15s ease;
     }
-    .badge:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+    .badge:hover { background: #3b82f6; color: #fff; }
 
     /* Hero suggestions */
     .hero {
@@ -450,6 +442,27 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       transform: translateY(-1px);
     }
 
+    /* Loading overlay */
+    .search-loading {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: #60a5fa;
+      font-size: 14px;
+      padding: 10px 0;
+    }
+    .search-loading.active { display: flex; }
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(96, 165, 250, 0.2);
+      border-top-color: #60a5fa;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     /* Footer */
     .footer {
       padding: 10px 20px;
@@ -466,19 +479,21 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 
     /* Resize grip */
     .resize-grip {
-      width: 14px;
-      height: 14px;
-      opacity: 0.4;
+      width: 18px;
+      height: 18px;
+      opacity: 0.5;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: nwse-resize;
+      transition: opacity 0.15s;
     }
+    .resize-grip:hover { opacity: 1; }
 
     /* Settings Modal Panel */
     .settings-panel {
       position: absolute;
-      top: 44px;
+      top: 46px;
       left: 0;
       right: 0;
       bottom: 0;
@@ -608,6 +623,11 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       <span class="badge" onclick="doSearch()">↵ Enter</span>
     </div>
 
+    <div class="search-loading" id="search-loading">
+      <div class="spinner"></div>
+      <span id="txt-loading">Searching Google & generating AI Overview...</span>
+    </div>
+
     <div class="hero">
       <div class="hero-tag">
         <span class="sparkle"></span>
@@ -639,24 +659,12 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       </button>
     </div>
 
-    <!-- Opacity -->
-    <div class="settings-group">
-      <div class="settings-label">
-        <span id="txt-lbl-opacity">Window Opacity</span>
-        <span id="val-opacity" style="color: #60a5fa; font-weight: 600;">96%</span>
-      </div>
-      <div class="settings-sublabel" id="txt-sub-opacity">Adjust overlay transparency on desktop</div>
-      <div class="slider-row">
-        <input type="range" id="slider-opacity" min="60" max="100" value="96" oninput="changeOpacity(this.value)" />
-      </div>
-    </div>
-
     <!-- Size Presets -->
     <div class="settings-group">
       <div class="settings-label">
         <span id="txt-lbl-size">Window Size Presets</span>
       </div>
-      <div class="settings-sublabel" id="txt-sub-size">Resize from edges freely, or pick a standard preset</div>
+      <div class="settings-sublabel" id="txt-sub-size">Resize from bottom-right corner or pick a preset</div>
       <div class="preset-btns">
         <button class="preset-btn" onclick="setSize(720, 520)">Compact (720x520)</button>
         <button class="preset-btn" onclick="setSize(820, 600)">Standard (820x600)</button>
@@ -704,8 +712,8 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       </span>
     </div>
     <!-- Visual Resize Grip -->
-    <div class="resize-grip" title="Resize window">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+    <div class="resize-grip" id="resize-grip" title="Drag to resize window">
+      <svg width="12" height="12" viewBox="0 0 10 10" fill="none">
         <circle cx="8" cy="8" r="1.3" fill="#64748b"/>
         <circle cx="4" cy="8" r="1.3" fill="#64748b"/>
         <circle cx="8" cy="4" r="1.3" fill="#64748b"/>
@@ -738,21 +746,76 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       }
     }
 
-    // Window Dragging: Triggered when mouse is down on header bar
-    document.getElementById('header-bar').addEventListener('mousedown', (e) => {
+    // Seamless Window Dragging
+    const header = document.getElementById('header-bar');
+    let isDragging = false;
+    let dragStartX = 0, dragStartY = 0;
+
+    header.addEventListener('mousedown', (e) => {
       if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
-        postAction('drag');
+        isDragging = true;
+        dragStartX = e.screenX;
+        dragStartY = e.screenY;
+        header.setPointerCapture(e.pointerId);
+      }
+    });
+
+    header.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const dx = e.screenX - dragStartX;
+        const dy = e.screenY - dragStartY;
+        if (dx !== 0 || dy !== 0) {
+          dragStartX = e.screenX;
+          dragStartY = e.screenY;
+          postAction('move', { dx: dx, dy: dy });
+        }
+      }
+    });
+
+    header.addEventListener('mouseup', (e) => {
+      if (isDragging) {
+        isDragging = false;
+        try { header.releasePointerCapture(e.pointerId); } catch(err) {}
+      }
+    });
+
+    // Seamless Window Resizing via bottom-right grip
+    const grip = document.getElementById('resize-grip');
+    let isResizing = false;
+    let resizeStartX = 0, resizeStartY = 0;
+
+    grip.addEventListener('mousedown', (e) => {
+      if (e.button === 0) {
+        isResizing = true;
+        resizeStartX = e.screenX;
+        resizeStartY = e.screenY;
+        grip.setPointerCapture(e.pointerId);
+        e.stopPropagation();
+      }
+    });
+
+    grip.addEventListener('mousemove', (e) => {
+      if (isResizing) {
+        const dw = e.screenX - resizeStartX;
+        const dh = e.screenY - resizeStartY;
+        if (dw !== 0 || dh !== 0) {
+          resizeStartX = e.screenX;
+          resizeStartY = e.screenY;
+          postAction('resize', { dw: dw, dh: dh });
+        }
+      }
+    });
+
+    grip.addEventListener('mouseup', (e) => {
+      if (isResizing) {
+        isResizing = false;
+        try { grip.releasePointerCapture(e.pointerId); } catch(err) {}
       }
     });
 
     function toggleSettings() {
       const panel = document.getElementById('settings-panel');
       panel.classList.toggle('active');
-    }
-
-    function changeOpacity(val) {
-      document.getElementById('val-opacity').innerText = val + '%';
-      postAction('set_opacity', { opacity: parseInt(val) });
     }
 
     function setSize(w, h) {
@@ -776,13 +839,12 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       document.getElementById('txt-hint-summon').innerText = isRu ? 'Вызов' : 'Summon';
       document.getElementById('txt-hint-hide').innerText = isRu ? 'Скрыть' : 'Hide';
       document.getElementById('txt-hint-blur').innerText = isRu ? 'Клик мимо скрывает' : 'Dismisses';
+      document.getElementById('txt-loading').innerText = isRu ? 'Поиск в Google и генерация AI Overview...' : 'Searching Google & generating AI Overview...';
 
       // Settings Strings
       document.getElementById('txt-settings-heading').innerText = isRu ? 'Настройки' : 'Settings';
-      document.getElementById('txt-lbl-opacity').innerText = isRu ? 'Прозрачность окна' : 'Window Opacity';
-      document.getElementById('txt-sub-opacity').innerText = isRu ? 'Регулировка прозрачности оверлея на рабочем столе' : 'Adjust overlay transparency on desktop';
       document.getElementById('txt-lbl-size').innerText = isRu ? 'Размеры окна' : 'Window Size Presets';
-      document.getElementById('txt-sub-size').innerText = isRu ? 'Тяните за края для любого размера или выберите готовый' : 'Resize from edges freely, or pick a standard preset';
+      document.getElementById('txt-sub-size').innerText = isRu ? 'Тяните за нижний правый угол или выберите готовый пресет' : 'Resize from bottom-right corner or pick a preset';
       document.getElementById('txt-lbl-autostart').innerText = isRu ? 'Автозапуск при старте Windows' : 'Launch on Windows Startup';
       document.getElementById('txt-sub-autostart').innerText = isRu ? 'Запуск в фоне при входе в систему' : 'Run automatically in background on login';
       document.getElementById('txt-lbl-hotkey').innerText = isRu ? 'Горячая клавиша' : 'Global Hotkey';
@@ -812,6 +874,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     function doSearch() {
       const q = document.getElementById('input').value.trim();
       if (q) {
+        document.getElementById('search-loading').classList.add('active');
         postAction('search', { query: q, lang: currentLang });
       }
     }
@@ -840,10 +903,6 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
           if (msg.lang) {
             currentLang = msg.lang;
             updateLanguageUI();
-          }
-          if (msg.autostart !== undefined) {
-            isAutostart = msg.autostart;
-            document.getElementById('switch-autostart').className = 'toggle-switch ' + (isAutostart ? 'on' : '');
           }
         } catch (err) {}
       });
@@ -1022,11 +1081,36 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
   document.body.prepend(header);
 
   // Drag Support on injected header
+  let isDraggingHeader = false;
+  let dragX = 0, dragY = 0;
+
   header.addEventListener('mousedown', (e) => {
     if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
-      if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage({ action: 'drag' });
+      isDraggingHeader = true;
+      dragX = e.screenX;
+      dragY = e.screenY;
+      header.setPointerCapture(e.pointerId);
+    }
+  });
+
+  header.addEventListener('mousemove', (e) => {
+    if (isDraggingHeader) {
+      const dx = e.screenX - dragX;
+      const dy = e.screenY - dragY;
+      if (dx !== 0 || dy !== 0) {
+        dragX = e.screenX;
+        dragY = e.screenY;
+        if (window.chrome && window.chrome.webview) {
+          window.chrome.webview.postMessage({ action: 'move', dx: dx, dy: dy });
+        }
       }
+    }
+  });
+
+  header.addEventListener('mouseup', (e) => {
+    if (isDraggingHeader) {
+      isDraggingHeader = false;
+      try { header.releasePointerCapture(e.pointerId); } catch(err) {}
     }
   });
 
@@ -1125,7 +1209,7 @@ void SetupTrayIcon(HWND hWnd) {
     }
     wcscpy_s(g_nid.szTip, L"Google AI Overlay (Alt+Space)");
 
-    // Toast Notification in bottom-right corner
+    // Native Startup Toast Notification in bottom-right corner
     g_nid.dwInfoFlags = NIIF_INFO;
     if (g_currentLang == L"ru") {
         wcscpy_s(g_nid.szInfoTitle, L"Google AI Overlay");
@@ -1167,40 +1251,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         return 0;
 
-    case WM_NCCALCSIZE:
-        // Allow custom frameless window while retaining native resizability
-        if (wParam == TRUE) {
-            return 0;
-        }
-        break;
-
-    case WM_NCHITTEST: {
-        // 8-directional smooth border and corner resizing
-        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        RECT rc;
-        GetWindowRect(hWnd, &rc);
-        int border = 8;
-
-        bool left = (pt.x >= rc.left && pt.x <= rc.left + border);
-        bool right = (pt.x >= rc.right - border && pt.x <= rc.right);
-        bool top = (pt.y >= rc.top && pt.y <= rc.top + border);
-        bool bottom = (pt.y >= rc.bottom - border && pt.y <= rc.bottom);
-
-        if (top && left) return HTTOPLEFT;
-        if (top && right) return HTTOPRIGHT;
-        if (bottom && left) return HTBOTTOMLEFT;
-        if (bottom && right) return HTBOTTOMRIGHT;
-        if (left) return HTLEFT;
-        if (right) return HTRIGHT;
-        if (top) return HTTOP;
-        if (bottom) return HTBOTTOM;
-
-        return HTCLIENT;
-    }
-
-    case WM_ACTIVATE:
-        // Automatically hide to tray when user clicks outside the overlay window
-        if (LOWORD(wParam) == WA_INACTIVE) {
+    case WM_ACTIVATEAPP:
+        // Automatically hide to tray ONLY when switching away to another application
+        if (wParam == FALSE) {
             HideOverlay();
         }
         return 0;
@@ -1322,15 +1375,30 @@ void InitWebView2(HWND hWnd) {
                                                     HideOverlay();
                                                 } else if (action == L"home") {
                                                     NavigateHome();
-                                                } else if (action == L"drag") {
-                                                    // Window Dragging via Win32 Caption Move
-                                                    ReleaseCapture();
-                                                    SendMessageW(g_hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-                                                } else if (action == L"set_opacity") {
-                                                    std::wstring opStr = ExtractJsonField(msg, L"opacity");
-                                                    if (!opStr.empty()) {
-                                                        SetWindowOpacity(_wtoi(opStr.c_str()));
-                                                    }
+                                                } else if (action == L"move") {
+                                                    // Seamless dragging
+                                                    std::wstring dxStr = ExtractJsonField(msg, L"dx");
+                                                    std::wstring dyStr = ExtractJsonField(msg, L"dy");
+                                                    int dx = _wtoi(dxStr.c_str());
+                                                    int dy = _wtoi(dyStr.c_str());
+                                                    RECT rc;
+                                                    GetWindowRect(g_hWnd, &rc);
+                                                    SetWindowPos(g_hWnd, nullptr, rc.left + dx, rc.top + dy, 0, 0,
+                                                                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                                                } else if (action == L"resize") {
+                                                    // Seamless resizing
+                                                    std::wstring dwStr = ExtractJsonField(msg, L"dw");
+                                                    std::wstring dhStr = ExtractJsonField(msg, L"dh");
+                                                    int dw = _wtoi(dwStr.c_str());
+                                                    int dh = _wtoi(dhStr.c_str());
+                                                    RECT rc;
+                                                    GetWindowRect(g_hWnd, &rc);
+                                                    int newW = (rc.right - rc.left) + dw;
+                                                    int newH = (rc.bottom - rc.top) + dh;
+                                                    if (newW < 540) newW = 540;
+                                                    if (newH < 420) newH = 420;
+                                                    SetWindowPos(g_hWnd, nullptr, 0, 0, newW, newH,
+                                                                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                                                 } else if (action == L"set_size") {
                                                     std::wstring wStr = ExtractJsonField(msg, L"width");
                                                     std::wstring hStr = ExtractJsonField(msg, L"height");
@@ -1411,20 +1479,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     int posX = (screenW - width) / 2;
     int posY = (screenH - height) / 2;
 
-    // Create Frameless Floating TopMost Window with Resizable Frame & Layered Opacity
+    // Create Clean Frameless Floating TopMost Window
+    // (Notice: NO WS_EX_LAYERED, so GPU hardware acceleration is flawless and input never drops)
     g_hWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         wc.lpszClassName,
         L"Google AI Overlay",
-        WS_POPUP | WS_THICKFRAME,
+        WS_POPUP,
         posX, posY, width, height,
         nullptr, nullptr, hInstance, nullptr
     );
 
     if (!g_hWnd) return 1;
-
-    // Initial Opacity (96%)
-    SetWindowOpacity(g_currentOpacity);
 
     // Apply Windows 11 DWM Smooth Rounded Corners (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
     DWORD cornerPreference = 2;
@@ -1434,7 +1500,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     MARGINS margins = { 1, 1, 1, 1 };
     DwmExtendFrameIntoClientArea(g_hWnd, &margins);
 
-    // Setup Tray and Startup Notification
+    // Setup Tray and Startup Notification Toast
     SetupTrayIcon(g_hWnd);
     RegisterHotKey(g_hWnd, HOTKEY_ID, MOD_ALT, VK_SPACE);
 
