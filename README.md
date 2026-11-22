@@ -1,57 +1,68 @@
 # Google AI Overlay (Windows)
 
-A lightweight, distraction-free Spotlight overlay for Windows that delivers Google Search with AI Overview on demand. Summon it anywhere with a global shortcut, type your query, and get an immediate smart synthesis without opening a heavy browser tab.
+A blazing-fast, native Win32/C++ Spotlight-style floating search overlay for Windows that delivers Google Search with AI Overview on demand. Summon it anywhere with a global shortcut, search in real-time, and get AI answers without opening a heavy browser tab.
+
+Written in pure native C++ with Microsoft WebView2 integration for instant (< 20ms) startup and minimal memory footprint.
 
 ## Features
 
-- **Global Hotkey:** Press `Alt + Space` anytime to toggle the overlay on top of any active window.
-- **AI Overview with Zero API Keys:** Leverages system WebView2 to render real-time Google AI Overviews and search cards without subscription fees or token setups.
-- **Distraction-Free UI:** Automatically cleans headers, advertisements, footers, and sidebars, presenting only the core answer and relevant sources.
-- **Bilingual Interface:** Detects your Windows system language (English / Russian) automatically, with an instant in-app toggle (`RU` / `EN`).
-- **External Links:** Clicking reference links automatically opens them in your primary desktop browser, keeping the overlay focused.
-- **System Tray:** Runs quietly in the background with quick access to visibility and language settings.
+- **Blazing Fast Native C++:** Zero Python or .NET runtime dependencies; compiled standalone executable under 1 MB.
+- **Global Hotkey:** Press `Alt + Space` anywhere to immediately summon or dismiss the overlay.
+- **Auto-Hide on Click Outside:** Seamlessly hides to the Windows system tray whenever you click away or lose focus.
+- **Smooth Rounded Corners & Glowing Aura:** Windows 11 native DWM rounded corners combined with a glowing blue-violet border aura and translucent glass header.
+- **AI Overview with Zero API Keys:** Uses native Windows WebView2 to access real-time Google AI Overviews and search cards without API keys or subscriptions.
+- **Distraction-Free UI:** Automatically strips ads, banners, footers, doodles, and sidebars, highlighting only the AI synthesis and key sources.
+- **Bilingual Interface:** Auto-detects Windows system language (`Russian` or `English`) with an instant interactive `RU / EN` toggle.
+- **External Link Handling:** Reference citations and external websites automatically open in your default browser.
+- **System Tray:** Sits quietly in the notification area with full status and quick controls.
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| `Alt + Space` | Summon or dismiss the overlay |
+| `Alt + Space` | Toggle overlay window |
 | `Enter` | Execute query |
-| `Escape` | Dismiss overlay immediately |
+| `Escape` | Dismiss to system tray |
+| `Click Outside` | Auto-hide overlay |
 
-## Getting Started
+## Quick Start
 
-### Prerequisites
+### Running the Pre-compiled Executable
 
-- Windows 10 / 11 with WebView2 Runtime (installed by default on modern Windows)
-- Python 3.10+
-
-### Installation
-
-1. Clone the repository:
+1. Download or clone this repository:
    ```bash
    git clone git@github.com:Fomaro/google-overlay.git
    cd google-overlay
    ```
+2. Double-click `google-overlay.exe`.
+3. Press `Alt + Space` to search!
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Building from Source
 
-3. Launch the application:
-   ```bash
-   python main.py
-   ```
-   Or double-click `run.bat`.
+To compile from source using MinGW GCC:
 
-## Architecture
+```bash
+build.bat
+```
 
-- **`main.py`**: Background lifecycle, system tray orchestration, and global hotkeys.
-- **`window.py`**: Window positioning, frameless TopMost management, and JavaScript bridge.
-- **`inject.py`**: Dynamic DOM cleaner and style injection engine.
-- **`i18n.py`**: Locale detection and localization dictionary.
-- **`ui/index.html`**: Clean launcher interface with quick query suggestions.
+Or manually:
+```bash
+windres src/resource.rc -O coff -o src/resource.res
+g++ -O2 -std=c++17 -municode -mwindows -static -static-libgcc -static-libstdc++ ^
+    src/main.cpp src/resource.res ^
+    -o google-overlay.exe ^
+    -I include ^
+    -lole32 -loleaut32 -luuid -ldwmapi -luser32 -lshell32 -lgdi32 -ladvapi32
+```
+
+## Project Structure
+
+- **`src/main.cpp`**: Native Win32 window lifecycle, tray icon, global hotkey, DWM rounded corners, and WebView2 controller.
+- **`src/resource.rc`**: Application icon and version metadata.
+- **`include/`**: Microsoft WebView2 COM C++ headers.
+- **`WebView2Loader.dll`**: Official Microsoft WebView2 loader library.
+- **`build.bat`**: One-click build script.
+- **`google-overlay.exe`**: Ready-to-run optimized standalone executable.
 
 ## License
 
