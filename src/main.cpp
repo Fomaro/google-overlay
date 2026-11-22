@@ -95,13 +95,11 @@ public:
     }
 };
 
-class NavigationCompletedHandler : public ICoreWebView2NavigationCompletedEventHandler {
-    IMPLEMENT_COM_BASE(NavigationCompletedHandler, ICoreWebView2NavigationCompletedEventHandler)
-    std::function<HRESULT(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*)> m_cb;
+class AddScriptHandler : public ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler {
+    IMPLEMENT_COM_BASE(AddScriptHandler, ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler)
 public:
-    NavigationCompletedHandler(std::function<HRESULT(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*)> cb) : m_cb(cb) {}
-    HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) override {
-        return m_cb(sender, args);
+    HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, PCWSTR id) override {
+        return S_OK;
     }
 };
 
@@ -192,18 +190,6 @@ void SetAutostart(bool enable) {
         }
         RegCloseKey(hKey);
     }
-}
-
-bool IsAutostartEnabled() {
-    HKEY hKey;
-    bool enabled = false;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExW(hKey, L"GoogleOverlay", nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-            enabled = true;
-        }
-        RegCloseKey(hKey);
-    }
-    return enabled;
 }
 
 // Window Size Presets
@@ -442,7 +428,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       transform: translateY(-1px);
     }
 
-    /* Loading overlay */
+    /* Loading indicator */
     .search-loading {
       display: none;
       align-items: center;
@@ -528,17 +514,6 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     .settings-label { font-size: 13.5px; font-weight: 500; color: var(--text); display: flex; justify-content: space-between; align-items: center; }
     .settings-sublabel { font-size: 12px; color: var(--text-muted); }
     
-    .slider-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-top: 6px;
-    }
-    input[type=range] {
-      flex: 1;
-      accent-color: #3b82f6;
-      cursor: pointer;
-    }
     .preset-btns {
       display: flex;
       gap: 8px;
@@ -695,7 +670,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     </div>
   </div>
 
-  <!-- Bottom Bar (Cleaned, No C++ text) -->
+  <!-- Bottom Bar -->
   <div class="footer">
     <div class="footer-hints">
       <span class="footer-hint-item">
@@ -904,6 +879,10 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
             currentLang = msg.lang;
             updateLanguageUI();
           }
+          if (msg.autostart !== undefined) {
+            isAutostart = msg.autostart;
+            document.getElementById('switch-autostart').className = 'toggle-switch ' + (isAutostart ? 'on' : '');
+          }
         } catch (err) {}
       });
     }
@@ -914,16 +893,21 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 </html>
 )rawhtml";
 
-// JavaScript injected into Google Search pages with Draggable Sticky Header
-static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
+// Pre-injection script: executed BEFORE any Google HTML is parsed or painted
+// This completely eliminates white flashes and raw Google flicker!
+static const wchar_t* PRE_INJECT_GOOGLE_SCRIPT = LR"rawjs(
 (function() {
-  if (document.getElementById('spotlight-injected-header')) return;
+  // 1. Immediately hide document to prevent raw Google flash
+  const root = document.documentElement;
+  root.style.backgroundColor = '#090e1a';
+  root.style.visibility = 'hidden';
 
+  // 2. Pre-inject Clean CSS
   const style = document.createElement('style');
-  style.id = 'spotlight-clean-styles';
+  style.id = 'spotlight-pre-styles';
   style.textContent = `
     html, body {
-      background: #090e1a !important;
+      background-color: #090e1a !important;
       color: #f8fafc !important;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
       margin: 0 !important;
@@ -936,21 +920,25 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
     ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
 
-    /* Hide Google clutter */
+    /* Hide Google Headers, Footers, Search Bar, Ads, Sidebars */
     #header, #tsf, #searchform, #fbar, #botstuff, #foot, #rhs,
     .appbar, #hdtb, .sfbg, .yg51tc, #top_nav, header, footer,
     [role="navigation"], .m7W83d, #searchform-holder, .minidiv,
     .RNNXgb, .embg, .sfbgx, .commercial-unit-desktop-rhs, .pla-unit-container,
     #easter-egg, #W4Efsb, .aajZCb, .gb_d, .gb_e, .gb_f, .g-blk,
-    #extabar, .kp-blk, .AUiWPd, #gb, .gb_1, .gb_2, .gb_3, .fbar {
+    #extabar, .kp-blk, .AUiWPd, #gb, .gb_1, .gb_2, .gb_3, .fbar,
+    .Lj9fsd, .logo {
       display: none !important;
     }
 
+    /* Main Container Alignment with generous breathing room below search bar */
     #main {
-      padding-top: 76px !important;
+      padding-top: 86px !important;
       display: flex !important;
       flex-direction: column !important;
       align-items: center !important;
+      width: 100% !important;
+      background: transparent !important;
     }
 
     #cnt, #rcnt, #center_col, #rso {
@@ -959,39 +947,38 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
       margin: 0 auto !important;
       padding: 0 16px !important;
       border: none !important;
+      box-sizing: border-box !important;
+      background: transparent !important;
     }
 
-    /* AI Overview Card */
-    div[data-attrid*="wa:"], div[data-md*="wa:"],
-    div[aria-label*="AI Overview"], div[aria-label*="Обзор от ИИ"],
-    .xpdopen, .YzCcNe,
+    /* Clean AI Overview block: subtle outer glowing border without breaking internal layout */
+    .MjjYud:first-child,
     div[jscontroller]:has(> [aria-label*="AI Overview"]),
     div[jscontroller]:has(> [aria-label*="Обзор от ИИ"]) {
-      background: linear-gradient(145deg, #12192b 0%, #182238 100%) !important;
-      border: 1px solid rgba(96, 165, 250, 0.4) !important;
+      border: 1px solid rgba(96, 165, 250, 0.45) !important;
       border-radius: 16px !important;
-      padding: 22px !important;
-      margin: 16px 0 24px 0 !important;
-      box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 25px -5px rgba(59, 130, 246, 0.2) !important;
-      color: #f1f5f9 !important;
-    }
-    div[data-attrid*="wa:"] *, div[aria-label*="AI Overview"] *, div[aria-label*="Обзор от ИИ"] * {
-      color: #f1f5f9 !important;
-      background-color: transparent !important;
+      box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.25) !important;
+      margin-bottom: 20px !important;
+      overflow: hidden !important;
     }
 
-    /* Organic cards */
-    .g, .MjjYud > div {
+    /* All text inside AI Overview */
+    div[data-attrid*="wa:"] *, div[aria-label*="AI Overview"] *, div[aria-label*="Обзор от ИИ"] * {
+      color: #f1f5f9 !important;
+    }
+
+    /* Organic Result Cards */
+    .g {
       background: rgba(255, 255, 255, 0.03) !important;
-      border: 1px solid rgba(255, 255, 255, 0.06) !important;
+      border: 1px solid rgba(255, 255, 255, 0.07) !important;
       border-radius: 12px !important;
       padding: 16px 18px !important;
       margin-bottom: 12px !important;
       transition: all 0.15s ease !important;
     }
-    .g:hover, .MjjYud > div:hover {
+    .g:hover {
       background: rgba(255, 255, 255, 0.06) !important;
-      border-color: rgba(255, 255, 255, 0.14) !important;
+      border-color: rgba(255, 255, 255, 0.15) !important;
     }
     h3, .LC20lb { color: #60a5fa !important; font-size: 16px !important; font-weight: 600 !important; }
     .VwiC3b, .yXK7lf, span, em { color: #94a3b8 !important; line-height: 1.5 !important; font-size: 13.5px !important; }
@@ -1002,8 +989,8 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
       position: fixed !important;
       top: 0 !important; left: 0 !important; right: 0 !important;
       height: 64px !important;
-      background: rgba(9, 14, 26, 0.94) !important;
-      backdrop-filter: blur(16px) !important;
+      background: rgba(9, 14, 26, 0.95) !important;
+      backdrop-filter: blur(20px) !important;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
       z-index: 9999999 !important;
       display: flex !important;
@@ -1011,6 +998,7 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
       justify-content: center !important;
       padding: 0 16px !important;
       cursor: grab !important;
+      box-sizing: border-box !important;
     }
     #spotlight-injected-header:active { cursor: grabbing !important; }
 
@@ -1050,106 +1038,127 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
     }
     .spotlight-btn-close:hover { background: rgba(239, 68, 68, 0.2) !important; color: #f87171 !important; }
   `;
-  document.head.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
 
-  // 2. Build Injected Top Bar
-  const header = document.createElement('div');
-  header.id = 'spotlight-injected-header';
-  
-  const params = new URLSearchParams(window.location.search);
-  const q = params.get('q') || '';
-  const lang = params.get('hl') || 'en';
-
-  header.innerHTML = `
-    <div class="spotlight-inner">
-      <button class="spotlight-btn-home" id="spotlight-home" title="Launcher">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"/>
-        </svg>
-      </button>
-      <div class="spotlight-input-wrap">
-        <input type="text" class="spotlight-input" id="spotlight-field" value="${q.replace(/"/g, '&quot;')}" placeholder="${lang === 'ru' ? 'Спросите Google AI...' : 'Ask Google AI...'}" />
-      </div>
-      <button class="spotlight-btn-close" id="spotlight-close" title="Hide (Esc)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-          <line x1="18" y1="6" x2="6" y2="18"></line>
-          <line x1="6" y1="6" x2="18" y2="18"></line>
-        </svg>
-      </button>
-    </div>
-  `;
-  document.body.prepend(header);
-
-  // Drag Support on injected header
-  let isDraggingHeader = false;
-  let dragX = 0, dragY = 0;
-
-  header.addEventListener('mousedown', (e) => {
-    if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
-      isDraggingHeader = true;
-      dragX = e.screenX;
-      dragY = e.screenY;
-      header.setPointerCapture(e.pointerId);
+  // 3. When DOM is ready, build header and reveal page
+  function setupPage() {
+    if (document.getElementById('spotlight-injected-header')) return;
+    
+    // Only proceed on Google Search pages
+    if (!window.location.href.includes('google.com/search')) {
+      document.documentElement.style.visibility = 'visible';
+      return;
     }
-  });
 
-  header.addEventListener('mousemove', (e) => {
-    if (isDraggingHeader) {
-      const dx = e.screenX - dragX;
-      const dy = e.screenY - dragY;
-      if (dx !== 0 || dy !== 0) {
+    const header = document.createElement('div');
+    header.id = 'spotlight-injected-header';
+    
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q') || '';
+    const lang = params.get('hl') || 'en';
+
+    header.innerHTML = `
+      <div class="spotlight-inner">
+        <button class="spotlight-btn-home" id="spotlight-home" title="Launcher">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"/>
+          </svg>
+        </button>
+        <div class="spotlight-input-wrap">
+          <input type="text" class="spotlight-input" id="spotlight-field" value="${q.replace(/"/g, '&quot;')}" placeholder="${lang === 'ru' ? 'Спросите Google AI...' : 'Ask Google AI...'}" />
+        </div>
+        <button class="spotlight-btn-close" id="spotlight-close" title="Hide (Esc)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    `;
+    document.body.prepend(header);
+
+    // Drag Support on injected header
+    let isDraggingHeader = false;
+    let dragX = 0, dragY = 0;
+
+    header.addEventListener('mousedown', (e) => {
+      if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
+        isDraggingHeader = true;
         dragX = e.screenX;
         dragY = e.screenY;
-        if (window.chrome && window.chrome.webview) {
-          window.chrome.webview.postMessage({ action: 'move', dx: dx, dy: dy });
+        header.setPointerCapture(e.pointerId);
+      }
+    });
+
+    header.addEventListener('mousemove', (e) => {
+      if (isDraggingHeader) {
+        const dx = e.screenX - dragX;
+        const dy = e.screenY - dragY;
+        if (dx !== 0 || dy !== 0) {
+          dragX = e.screenX;
+          dragY = e.screenY;
+          if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage({ action: 'move', dx: dx, dy: dy });
+          }
         }
       }
-    }
-  });
+    });
 
-  header.addEventListener('mouseup', (e) => {
-    if (isDraggingHeader) {
-      isDraggingHeader = false;
-      try { header.releasePointerCapture(e.pointerId); } catch(err) {}
-    }
-  });
-
-  const field = document.getElementById('spotlight-field');
-  field.focus();
-  field.select();
-
-  field.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      const val = field.value.trim();
-      if (val && window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage({ action: 'search', query: val, lang: lang });
+    header.addEventListener('mouseup', (e) => {
+      if (isDraggingHeader) {
+        isDraggingHeader = false;
+        try { header.releasePointerCapture(e.pointerId); } catch(err) {}
       }
-    } else if (e.key === 'Escape') {
+    });
+
+    const field = document.getElementById('spotlight-field');
+    if (field) {
+      field.focus();
+      field.select();
+
+      field.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const val = field.value.trim();
+          if (val && window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage({ action: 'search', query: val, lang: lang });
+          }
+        } else if (e.key === 'Escape') {
+          if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage({ action: 'hide' });
+          }
+        }
+      });
+    }
+
+    document.getElementById('spotlight-home').onclick = () => {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ action: 'home' });
+      }
+    };
+
+    document.getElementById('spotlight-close').onclick = () => {
       if (window.chrome && window.chrome.webview) {
         window.chrome.webview.postMessage({ action: 'hide' });
       }
-    }
-  });
+    };
 
-  document.getElementById('spotlight-home').onclick = () => {
-    if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage({ action: 'home' });
-    }
-  };
-
-  document.getElementById('spotlight-close').onclick = () => {
-    if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage({ action: 'hide' });
-    }
-  };
-
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage({ action: 'hide' });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (window.chrome && window.chrome.webview) {
+          window.chrome.webview.postMessage({ action: 'hide' });
+        }
       }
-    }
-  });
+    });
+
+    // Reveal page cleanly without any flicker!
+    document.documentElement.style.visibility = 'visible';
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupPage);
+  } else {
+    setupPage();
+  }
 })();
 )rawjs";
 
@@ -1343,6 +1352,13 @@ void InitWebView2(HWND hWnd) {
                             if (g_webview) {
                                 g_webview->AddRef();
 
+                                // Pre-inject script executed BEFORE page parses/renders
+                                // This completely eliminates white flashes and raw Google flicker!
+                                g_webview->AddScriptToExecuteOnDocumentCreated(
+                                    PRE_INJECT_GOOGLE_SCRIPT,
+                                    new AddScriptHandler()
+                                );
+
                                 // Intercept external links: open in system default browser
                                 g_webview->add_NewWindowRequested(
                                     new NewWindowHandler(
@@ -1424,24 +1440,6 @@ void InitWebView2(HWND hWnd) {
                                     ), nullptr
                                 );
 
-                                // Inject cleaning script on navigation
-                                g_webview->add_NavigationCompleted(
-                                    new NavigationCompletedHandler(
-                                        [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
-                                            LPWSTR uri = nullptr;
-                                            sender->get_Source(&uri);
-                                            if (uri) {
-                                                std::wstring currentUrl = uri;
-                                                CoTaskMemFree(uri);
-                                                if (currentUrl.find(L"google.com/search") != std::wstring::npos) {
-                                                    sender->ExecuteScript(INJECT_GOOGLE_SCRIPT, nullptr);
-                                                }
-                                            }
-                                            return S_OK;
-                                        }
-                                    ), nullptr
-                                );
-
                                 // Navigate to initial launcher UI
                                 NavigateHome();
                             }
@@ -1480,7 +1478,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     int posY = (screenH - height) / 2;
 
     // Create Clean Frameless Floating TopMost Window
-    // (Notice: NO WS_EX_LAYERED, so GPU hardware acceleration is flawless and input never drops)
     g_hWnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         wc.lpszClassName,
