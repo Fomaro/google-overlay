@@ -30,8 +30,8 @@ A lightweight, distraction-free Spotlight overlay for Windows that delivers Goog
 
 1. Clone the repository:
    ```bash
-   git clone git@github.com:Fomaro/google-ai-overlay.git
-   cd google-ai-overlay
+   git clone git@github.com:Fomaro/google-overlay.git
+   cd google-overlay
    ```
 
 2. Install dependencies:
