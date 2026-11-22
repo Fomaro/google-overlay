@@ -95,6 +95,16 @@ public:
     }
 };
 
+class NavigationCompletedHandler : public ICoreWebView2NavigationCompletedEventHandler {
+    IMPLEMENT_COM_BASE(NavigationCompletedHandler, ICoreWebView2NavigationCompletedEventHandler)
+    std::function<HRESULT(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*)> m_cb;
+public:
+    NavigationCompletedHandler(std::function<HRESULT(ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*)> cb) : m_cb(cb) {}
+    HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) override {
+        return m_cb(sender, args);
+    }
+};
+
 class AddScriptHandler : public ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler {
     IMPLEMENT_COM_BASE(AddScriptHandler, ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler)
 public:
@@ -893,170 +903,174 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 </html>
 )rawhtml";
 
-// Pre-injection script: executed BEFORE any Google HTML is parsed or painted
-// This completely eliminates white flashes and raw Google flicker!
-static const wchar_t* PRE_INJECT_GOOGLE_SCRIPT = LR"rawjs(
+// Safe, comprehensive script injected into Google Search pages
+// Cleans Google headers, navigation tabs, footers and inserts our sticky spotlight bar
+static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
 (function() {
-  // 1. Immediately hide document to prevent raw Google flash
-  const root = document.documentElement;
-  root.style.backgroundColor = '#090e1a';
-  root.style.visibility = 'hidden';
+  // Only run on Google Search
+  if (!window.location.href.includes('google.com/search')) return;
 
-  // 2. Pre-inject Clean CSS
-  const style = document.createElement('style');
-  style.id = 'spotlight-pre-styles';
-  style.textContent = `
-    html, body {
-      background-color: #090e1a !important;
-      color: #f8fafc !important;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-      margin: 0 !important;
-      padding: 0 !important;
-      overflow-x: hidden !important;
-      border-radius: 20px !important;
-    }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+  // 1. Inject Style (handles both immediate hide and theme styling)
+  function injectStyles() {
+    if (document.getElementById('spotlight-clean-styles')) return;
 
-    /* Hide Google Headers, Footers, Search Bar, Ads, Sidebars */
-    #header, #tsf, #searchform, #fbar, #botstuff, #foot, #rhs,
-    .appbar, #hdtb, .sfbg, .yg51tc, #top_nav, header, footer,
-    [role="navigation"], .m7W83d, #searchform-holder, .minidiv,
-    .RNNXgb, .embg, .sfbgx, .commercial-unit-desktop-rhs, .pla-unit-container,
-    #easter-egg, #W4Efsb, .aajZCb, .gb_d, .gb_e, .gb_f, .g-blk,
-    #extabar, .kp-blk, .AUiWPd, #gb, .gb_1, .gb_2, .gb_3, .fbar,
-    .Lj9fsd, .logo {
-      display: none !important;
-    }
+    const style = document.createElement('style');
+    style.id = 'spotlight-clean-styles';
+    style.textContent = `
+      html, body {
+        background-color: #090e1a !important;
+        color: #f8fafc !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow-x: hidden !important;
+      }
+      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
 
-    /* Main Container Alignment with generous breathing room below search bar */
-    #main {
-      padding-top: 86px !important;
-      display: flex !important;
-      flex-direction: column !important;
-      align-items: center !important;
-      width: 100% !important;
-      background: transparent !important;
-    }
+      /* Hide all Google chrome: header, search input, doodles, apps, sign in, navigation tabs, footers */
+      #header, #tsf, #searchform, #gb, #hdtb,
+      div[role="navigation"], .crJ18e, .IUOThf,
+      .minidiv, .sfbg, .RNNXgb, #fbar, #foot, #rhs,
+      .appbar, header, footer, .Lj9fsd, .logo {
+        display: none !important;
+      }
 
-    #cnt, #rcnt, #center_col, #rso {
-      width: 100% !important;
-      max-width: 760px !important;
-      margin: 0 auto !important;
-      padding: 0 16px !important;
-      border: none !important;
-      box-sizing: border-box !important;
-      background: transparent !important;
-    }
+      /* Container alignment: let sticky header naturally space the content */
+      #main {
+        padding-top: 0 !important;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        width: 100% !important;
+        background: transparent !important;
+      }
 
-    /* Clean AI Overview block: subtle outer glowing border without breaking internal layout */
-    .MjjYud:first-child,
-    div[jscontroller]:has(> [aria-label*="AI Overview"]),
-    div[jscontroller]:has(> [aria-label*="Обзор от ИИ"]) {
-      border: 1px solid rgba(96, 165, 250, 0.45) !important;
-      border-radius: 16px !important;
-      box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.25) !important;
-      margin-bottom: 20px !important;
-      overflow: hidden !important;
-    }
+      #cnt, #rcnt, #center_col, #rso {
+        width: 100% !important;
+        max-width: 760px !important;
+        margin: 0 auto !important;
+        padding: 0 !important;
+        border: none !important;
+        box-sizing: border-box !important;
+        background: transparent !important;
+      }
 
-    /* All text inside AI Overview */
-    div[data-attrid*="wa:"] *, div[aria-label*="AI Overview"] *, div[aria-label*="Обзор от ИИ"] * {
-      color: #f1f5f9 !important;
-    }
+      /* Subtle glowing border on the outer AI Overview block without breaking internal layout */
+      .MjjYud:first-child {
+        border: 1px solid rgba(96, 165, 250, 0.45) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.25) !important;
+        margin-bottom: 20px !important;
+        overflow: hidden !important;
+      }
 
-    /* Organic Result Cards */
-    .g {
-      background: rgba(255, 255, 255, 0.03) !important;
-      border: 1px solid rgba(255, 255, 255, 0.07) !important;
-      border-radius: 12px !important;
-      padding: 16px 18px !important;
-      margin-bottom: 12px !important;
-      transition: all 0.15s ease !important;
-    }
-    .g:hover {
-      background: rgba(255, 255, 255, 0.06) !important;
-      border-color: rgba(255, 255, 255, 0.15) !important;
-    }
-    h3, .LC20lb { color: #60a5fa !important; font-size: 16px !important; font-weight: 600 !important; }
-    .VwiC3b, .yXK7lf, span, em { color: #94a3b8 !important; line-height: 1.5 !important; font-size: 13.5px !important; }
-    .byrV5b, cite { color: #64748b !important; font-size: 12px !important; }
+      /* Sticky Injected Spotlight Header */
+      #spotlight-injected-header {
+        position: sticky !important;
+        top: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        height: 60px !important;
+        background: rgba(9, 14, 26, 0.96) !important;
+        backdrop-filter: blur(20px) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        z-index: 99999999 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0 16px !important;
+        margin-bottom: 18px !important;
+        cursor: grab !important;
+        box-sizing: border-box !important;
+      }
+      #spotlight-injected-header:active { cursor: grabbing !important; }
 
-    /* Sticky Injected Top Bar */
-    #spotlight-injected-header {
-      position: fixed !important;
-      top: 0 !important; left: 0 !important; right: 0 !important;
-      height: 64px !important;
-      background: rgba(9, 14, 26, 0.95) !important;
-      backdrop-filter: blur(20px) !important;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
-      z-index: 9999999 !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      padding: 0 16px !important;
-      cursor: grab !important;
-      box-sizing: border-box !important;
+      .spotlight-inner {
+        width: 100% !important;
+        max-width: 760px !important;
+        display: flex !important;
+        align-items: center !important;
+        gap: 12px !important;
+      }
+      .spotlight-btn-home {
+        background: rgba(255, 255, 255, 0.05) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 10px !important;
+        width: 36px !important;
+        height: 36px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        cursor: pointer !important;
+        color: #94a3b8 !important;
+        flex-shrink: 0 !important;
+        transition: all 0.15s ease !important;
+      }
+      .spotlight-btn-home:hover {
+        background: rgba(255, 255, 255, 0.12) !important;
+        color: #f8fafc !important;
+      }
+      .spotlight-input-wrap {
+        flex: 1 !important;
+        display: flex !important;
+        align-items: center !important;
+        background: #182238 !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 10px !important;
+        height: 40px !important;
+        padding: 0 12px !important;
+        transition: all 0.15s ease !important;
+      }
+      .spotlight-input-wrap:focus-within {
+        border-color: #3b82f6 !important;
+        box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25) !important;
+      }
+      .spotlight-input {
+        width: 100% !important;
+        background: transparent !important;
+        border: none !important;
+        outline: none !important;
+        color: #f8fafc !important;
+        font-size: 15px !important;
+        font-family: inherit !important;
+      }
+      .spotlight-btn-close {
+        background: none !important;
+        border: none !important;
+        color: #64748b !important;
+        cursor: pointer !important;
+        width: 32px !important;
+        height: 32px !important;
+        border-radius: 6px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+      }
+      .spotlight-btn-close:hover {
+        background: rgba(239, 68, 68, 0.2) !important;
+        color: #f87171 !important;
+      }
+    `;
+    const target = document.head || document.documentElement || document.body;
+    if (target) {
+      target.appendChild(style);
     }
-    #spotlight-injected-header:active { cursor: grabbing !important; }
+  }
 
-    .spotlight-inner {
-      width: 100% !important; max-width: 760px !important;
-      display: flex !important; align-items: center !important; gap: 12px !important;
-    }
-    .spotlight-btn-home {
-      background: rgba(255, 255, 255, 0.05) !important;
-      border: 1px solid rgba(255, 255, 255, 0.08) !important;
-      border-radius: 10px !important;
-      width: 38px !important; height: 38px !important;
-      display: flex !important; align-items: center !important; justify-content: center !important;
-      cursor: pointer !important; color: #94a3b8 !important; flex-shrink: 0 !important;
-      transition: all 0.15s ease !important;
-    }
-    .spotlight-btn-home:hover { background: rgba(255, 255, 255, 0.1) !important; color: #f8fafc !important; }
-    .spotlight-input-wrap {
-      flex: 1 !important; display: flex !important; align-items: center !important;
-      background: #182238 !important; border: 1px solid rgba(255, 255, 255, 0.1) !important;
-      border-radius: 10px !important; height: 42px !important; padding: 0 12px !important;
-      transition: all 0.15s ease !important;
-    }
-    .spotlight-input-wrap:focus-within {
-      border-color: #3b82f6 !important;
-      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25) !important;
-    }
-    .spotlight-input {
-      width: 100% !important; background: transparent !important;
-      border: none !important; outline: none !important; color: #f8fafc !important;
-      font-size: 15px !important; font-family: inherit !important;
-    }
-    .spotlight-btn-close {
-      background: none !important; border: none !important; color: #64748b !important;
-      cursor: pointer !important; width: 32px !important; height: 32px !important;
-      border-radius: 6px !important; display: flex !important; align-items: center !important; justify-content: center !important;
-    }
-    .spotlight-btn-close:hover { background: rgba(239, 68, 68, 0.2) !important; color: #f87171 !important; }
-  `;
-  (document.head || document.documentElement).appendChild(style);
-
-  // 3. When DOM is ready, build header and reveal page
-  function setupPage() {
+  // 2. Build and inject top bar
+  function injectHeader() {
     if (document.getElementById('spotlight-injected-header')) return;
-    
-    // Only proceed on Google Search pages
-    if (!window.location.href.includes('google.com/search')) {
-      document.documentElement.style.visibility = 'visible';
-      return;
-    }
+    if (!document.body) return;
 
-    const header = document.createElement('div');
-    header.id = 'spotlight-injected-header';
-    
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q') || '';
     const lang = params.get('hl') || 'en';
 
+    const header = document.createElement('div');
+    header.id = 'spotlight-injected-header';
     header.innerHTML = `
       <div class="spotlight-inner">
         <button class="spotlight-btn-home" id="spotlight-home" title="Launcher">
@@ -1077,26 +1091,26 @@ static const wchar_t* PRE_INJECT_GOOGLE_SCRIPT = LR"rawjs(
     `;
     document.body.prepend(header);
 
-    // Drag Support on injected header
-    let isDraggingHeader = false;
-    let dragX = 0, dragY = 0;
+    // Drag Support
+    let isDragging = false;
+    let startX = 0, startY = 0;
 
     header.addEventListener('mousedown', (e) => {
       if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
-        isDraggingHeader = true;
-        dragX = e.screenX;
-        dragY = e.screenY;
+        isDragging = true;
+        startX = e.screenX;
+        startY = e.screenY;
         header.setPointerCapture(e.pointerId);
       }
     });
 
     header.addEventListener('mousemove', (e) => {
-      if (isDraggingHeader) {
-        const dx = e.screenX - dragX;
-        const dy = e.screenY - dragY;
+      if (isDragging) {
+        const dx = e.screenX - startX;
+        const dy = e.screenY - startY;
         if (dx !== 0 || dy !== 0) {
-          dragX = e.screenX;
-          dragY = e.screenY;
+          startX = e.screenX;
+          startY = e.screenY;
           if (window.chrome && window.chrome.webview) {
             window.chrome.webview.postMessage({ action: 'move', dx: dx, dy: dy });
           }
@@ -1105,8 +1119,8 @@ static const wchar_t* PRE_INJECT_GOOGLE_SCRIPT = LR"rawjs(
     });
 
     header.addEventListener('mouseup', (e) => {
-      if (isDraggingHeader) {
-        isDraggingHeader = false;
+      if (isDragging) {
+        isDragging = false;
         try { header.releasePointerCapture(e.pointerId); } catch(err) {}
       }
     });
@@ -1141,24 +1155,26 @@ static const wchar_t* PRE_INJECT_GOOGLE_SCRIPT = LR"rawjs(
         window.chrome.webview.postMessage({ action: 'hide' });
       }
     };
+  }
 
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        if (window.chrome && window.chrome.webview) {
-          window.chrome.webview.postMessage({ action: 'hide' });
-        }
+  // 3. Execution & Mutation Monitoring
+  injectStyles();
+  injectHeader();
+
+  // Watch for Google dynamic re-renders to ensure header and styles stay intact
+  const observer = new MutationObserver(() => {
+    injectStyles();
+    injectHeader();
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ action: 'hide' });
       }
-    });
-
-    // Reveal page cleanly without any flicker!
-    document.documentElement.style.visibility = 'visible';
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupPage);
-  } else {
-    setupPage();
-  }
+    }
+  });
 })();
 )rawjs";
 
@@ -1352,10 +1368,9 @@ void InitWebView2(HWND hWnd) {
                             if (g_webview) {
                                 g_webview->AddRef();
 
-                                // Pre-inject script executed BEFORE page parses/renders
-                                // This completely eliminates white flashes and raw Google flicker!
+                                // Pre-registration of script on document created
                                 g_webview->AddScriptToExecuteOnDocumentCreated(
-                                    PRE_INJECT_GOOGLE_SCRIPT,
+                                    GOOGLE_OVERLAY_SCRIPT,
                                     new AddScriptHandler()
                                 );
 
@@ -1433,6 +1448,24 @@ void InitWebView2(HWND hWnd) {
                                                     if (!query.empty()) {
                                                         PerformSearch(query, lang.empty() ? g_currentLang : lang);
                                                     }
+                                                }
+                                            }
+                                            return S_OK;
+                                        }
+                                    ), nullptr
+                                );
+
+                                // Bulletproof injection on NavigationCompleted as well!
+                                g_webview->add_NavigationCompleted(
+                                    new NavigationCompletedHandler(
+                                        [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+                                            LPWSTR uri = nullptr;
+                                            sender->get_Source(&uri);
+                                            if (uri) {
+                                                std::wstring currentUrl = uri;
+                                                CoTaskMemFree(uri);
+                                                if (currentUrl.find(L"google.com/search") != std::wstring::npos) {
+                                                    sender->ExecuteScript(GOOGLE_OVERLAY_SCRIPT, nullptr);
                                                 }
                                             }
                                             return S_OK;
