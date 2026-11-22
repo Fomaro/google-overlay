@@ -105,11 +105,13 @@ public:
     }
 };
 
-class AddScriptHandler : public ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler {
-    IMPLEMENT_COM_BASE(AddScriptHandler, ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler)
+class ExecuteScriptCompletedHandler : public ICoreWebView2ExecuteScriptCompletedHandler {
+    IMPLEMENT_COM_BASE(ExecuteScriptCompletedHandler, ICoreWebView2ExecuteScriptCompletedHandler)
+    std::function<HRESULT(HRESULT, LPCWSTR)> m_cb;
 public:
-    HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, PCWSTR id) override {
-        return S_OK;
+    ExecuteScriptCompletedHandler(std::function<HRESULT(HRESULT, LPCWSTR)> cb) : m_cb(cb) {}
+    HRESULT STDMETHODCALLTYPE Invoke(HRESULT res, LPCWSTR json) override {
+        return m_cb(res, json);
     }
 };
 
@@ -903,44 +905,79 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 </html>
 )rawhtml";
 
-// Safe, comprehensive script injected into Google Search pages
-// Cleans Google headers, navigation tabs, footers and inserts our sticky spotlight bar
+// Precision Google Cleaner Script:
+// 1. Completely eliminates double scrollbar (html single scroller, body visible).
+// 2. Fixed sticky top bar (50px) with zero awkward gap.
+// 3. Removes Google's separator line (appbar, hr, border-top/bottom) cutting across text.
+// 4. Maintains clean single-outer border on AI Overview card.
+// 5. Works reliably on google.com, google.ru, and all regional domains.
 static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
 (function() {
-  // Only run on Google Search
-  if (!window.location.href.includes('google.com/search')) return;
+  if (!window.location.pathname.includes('/search') && !window.location.search.includes('q=')) return;
 
-  // 1. Inject Style (handles both immediate hide and theme styling)
-  function injectStyles() {
+  function injectCleanCSS() {
     if (document.getElementById('spotlight-clean-styles')) return;
 
     const style = document.createElement('style');
     style.id = 'spotlight-clean-styles';
     style.textContent = `
-      html, body {
+      /* 1. ELIMINATE DOUBLE SCROLLBAR - ONLY HTML SCROLLS */
+      html {
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        height: auto !important;
+        min-height: 100% !important;
+        background-color: #090e1a !important;
+      }
+      body {
+        overflow: visible !important;
+        height: auto !important;
+        min-height: 100% !important;
         background-color: #090e1a !important;
         color: #f8fafc !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         margin: 0 !important;
         padding: 0 !important;
-        overflow-x: hidden !important;
       }
-      ::-webkit-scrollbar { width: 6px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
-      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+      #main, #cnt, #rcnt, #center_col, #rso, .Gy5Tnd {
+        overflow: visible !important;
+        height: auto !important;
+        max-height: none !important;
+      }
+      ::-webkit-scrollbar { width: 7px !important; }
+      ::-webkit-scrollbar-track { background: transparent !important; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16) !important; border-radius: 4px !important; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32) !important; }
 
-      /* Hide all Google chrome: header, search input, doodles, apps, sign in, navigation tabs, footers */
-      #header, #tsf, #searchform, #gb, #hdtb,
-      div[role="navigation"], .crJ18e, .IUOThf,
-      .minidiv, .sfbg, .RNNXgb, #fbar, #foot, #rhs,
-      .appbar, header, footer, .Lj9fsd, .logo {
+      /* 2. REMOVE ALL GOOGLE CHROME, ADS, TABS, FOOTERS, DIVIDERS */
+      #header, #tsf, #searchform, #gb, #hdtb, #hdtbSum, #hdtb-msb, #hdtb-mrl,
+      #appbar, .appbar, #top_nav, .s6JM6d, .minidiv, .sfbg, #taw, #topstuff,
+      #fbar, #foot, #rhs, header, footer, nav, [role="navigation"],
+      hr, [role="separator"], .hlcw0c, .eq4Bur, .yg51tc, .m7W83d,
+      div[style*="border-top"], div[style*="border-bottom"],
+      .IUOThf, .crJ18e, .RNNXgb, .Lj9fsd, .logo,
+      #easter-egg, #W4Efsb, .aajZCb, .gb_d, .gb_e, .gb_f, .g-blk,
+      #extabar, .kp-blk, .AUiWPd, #botstuff, #extrares, .AuVDad {
         display: none !important;
+        border: none !important;
+        border-top: none !important;
+        border-bottom: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
       }
 
-      /* Container alignment: let sticky header naturally space the content */
+      /* Clear border lines on all immediate children of main container */
+      #cnt, #rcnt, #center_col, #rso, #center_col > div, #rso > div {
+        border-top: none !important;
+        border-bottom: none !important;
+      }
+
+      /* 3. MAIN CONTAINER: Precise Top Clearance under 50px header */
       #main {
-        padding-top: 0 !important;
+        padding-top: 56px !important;
+        margin-top: 0 !important;
         display: flex !important;
         flex-direction: column !important;
         align-items: center !important;
@@ -950,39 +987,48 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
 
       #cnt, #rcnt, #center_col, #rso {
         width: 100% !important;
-        max-width: 760px !important;
+        max-width: 780px !important;
         margin: 0 auto !important;
-        padding: 0 !important;
+        padding: 0 16px !important;
         border: none !important;
         box-sizing: border-box !important;
         background: transparent !important;
       }
 
-      /* Subtle glowing border on the outer AI Overview block without breaking internal layout */
-      .MjjYud:first-child {
-        border: 1px solid rgba(96, 165, 250, 0.45) !important;
+      #center_col {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+      }
+
+      /* 4. AI OVERVIEW CARD: Clean Outer Glow */
+      .MjjYud:first-child, div[data-attrid*="wa:"] {
+        margin-top: 6px !important;
+        margin-bottom: 20px !important;
+        border: 1px solid rgba(96, 165, 250, 0.4) !important;
         border-radius: 16px !important;
         box-shadow: 0 0 25px -5px rgba(59, 130, 246, 0.25) !important;
-        margin-bottom: 20px !important;
+        background: rgba(18, 25, 43, 0.6) !important;
+        backdrop-filter: blur(10px) !important;
+        padding: 16px !important;
+        box-sizing: border-box !important;
         overflow: hidden !important;
       }
 
-      /* Sticky Injected Spotlight Header */
+      /* 5. FIXED STICKY TOP BAR: Always visible, never overlaps content */
       #spotlight-injected-header {
-        position: sticky !important;
+        position: fixed !important;
         top: 0 !important;
         left: 0 !important;
         right: 0 !important;
-        height: 60px !important;
-        background: rgba(9, 14, 26, 0.96) !important;
+        height: 50px !important;
+        background: rgba(9, 14, 26, 0.95) !important;
         backdrop-filter: blur(20px) !important;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
-        z-index: 99999999 !important;
+        z-index: 2147483647 !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
         padding: 0 16px !important;
-        margin-bottom: 18px !important;
         cursor: grab !important;
         box-sizing: border-box !important;
       }
@@ -990,17 +1036,17 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
 
       .spotlight-inner {
         width: 100% !important;
-        max-width: 760px !important;
+        max-width: 780px !important;
         display: flex !important;
         align-items: center !important;
-        gap: 12px !important;
+        gap: 10px !important;
       }
       .spotlight-btn-home {
-        background: rgba(255, 255, 255, 0.05) !important;
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 10px !important;
-        width: 36px !important;
-        height: 36px !important;
+        background: rgba(255, 255, 255, 0.06) !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 9px !important;
+        width: 32px !important;
+        height: 32px !important;
         display: flex !important;
         align-items: center !important;
         justify-content: center !important;
@@ -1010,7 +1056,7 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
         transition: all 0.15s ease !important;
       }
       .spotlight-btn-home:hover {
-        background: rgba(255, 255, 255, 0.12) !important;
+        background: rgba(255, 255, 255, 0.14) !important;
         color: #f8fafc !important;
       }
       .spotlight-input-wrap {
@@ -1018,9 +1064,9 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
         display: flex !important;
         align-items: center !important;
         background: #182238 !important;
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 10px !important;
-        height: 40px !important;
+        border: 1px solid rgba(255, 255, 255, 0.12) !important;
+        border-radius: 9px !important;
+        height: 34px !important;
         padding: 0 12px !important;
         transition: all 0.15s ease !important;
       }
@@ -1034,7 +1080,7 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
         border: none !important;
         outline: none !important;
         color: #f8fafc !important;
-        font-size: 15px !important;
+        font-size: 14px !important;
         font-family: inherit !important;
       }
       .spotlight-btn-close {
@@ -1042,8 +1088,8 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
         border: none !important;
         color: #64748b !important;
         cursor: pointer !important;
-        width: 32px !important;
-        height: 32px !important;
+        width: 30px !important;
+        height: 30px !important;
         border-radius: 6px !important;
         display: flex !important;
         align-items: center !important;
@@ -1054,27 +1100,47 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
         color: #f87171 !important;
       }
     `;
-    const target = document.head || document.documentElement || document.body;
+    const target = document.head || document.documentElement;
     if (target) {
       target.appendChild(style);
     }
   }
 
-  // 2. Build and inject top bar
-  function injectHeader() {
+  function cleanupDOM() {
+    const junkSelectors = [
+      '#header', '#searchform', '#tsf', '#gb', '#hdtb', '#hdtbSum', '#appbar', '.appbar',
+      '#top_nav', '.s6JM6d', '.minidiv', '.sfbg', '#taw', '#topstuff',
+      '#fbar', '#foot', 'header', 'footer', 'nav', 'hr', '[role="navigation"]',
+      '#botstuff', '#extrares', '.AuVDad', '[role="separator"]'
+    ];
+    junkSelectors.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => el.remove());
+    });
+    document.documentElement.style.setProperty('overflow-y', 'auto', 'important');
+    document.documentElement.style.setProperty('overflow-x', 'hidden', 'important');
+    if (document.body) {
+      document.body.style.setProperty('overflow', 'visible', 'important');
+    }
+  }
+
+  function injectHeaderBar() {
     if (document.getElementById('spotlight-injected-header')) return;
     if (!document.body) return;
 
     const params = new URLSearchParams(window.location.search);
-    const q = params.get('q') || '';
-    const lang = params.get('hl') || 'en';
+    let q = params.get('q') || '';
+    if (!q) {
+      const gInput = document.querySelector('input[name="q"], textarea[name="q"]');
+      if (gInput) q = gInput.value || '';
+    }
+    const lang = params.get('hl') || (document.documentElement.lang && document.documentElement.lang.startsWith('ru') ? 'ru' : 'en');
 
     const header = document.createElement('div');
     header.id = 'spotlight-injected-header';
     header.innerHTML = `
       <div class="spotlight-inner">
         <button class="spotlight-btn-home" id="spotlight-home" title="Launcher">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z"/>
           </svg>
         </button>
@@ -1082,7 +1148,7 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
           <input type="text" class="spotlight-input" id="spotlight-field" value="${q.replace(/"/g, '&quot;')}" placeholder="${lang === 'ru' ? 'Спросите Google AI...' : 'Ask Google AI...'}" />
         </div>
         <button class="spotlight-btn-close" id="spotlight-close" title="Hide (Esc)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
@@ -1157,14 +1223,15 @@ static const wchar_t* GOOGLE_OVERLAY_SCRIPT = LR"rawjs(
     };
   }
 
-  // 3. Execution & Mutation Monitoring
-  injectStyles();
-  injectHeader();
+  injectCleanCSS();
+  cleanupDOM();
+  injectHeaderBar();
 
-  // Watch for Google dynamic re-renders to ensure header and styles stay intact
+  // Watch for any Google hydration to maintain clean header and styles
   const observer = new MutationObserver(() => {
-    injectStyles();
-    injectHeader();
+    injectCleanCSS();
+    cleanupDOM();
+    injectHeaderBar();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
@@ -1215,6 +1282,11 @@ void PerformSearch(const std::wstring& query, const std::wstring& lang) {
     if (!g_webview || query.empty()) return;
     g_currentQuery = query;
     if (!lang.empty()) g_currentLang = lang;
+
+    // Zero-flicker: Hide controller during background loading until cleaned
+    if (g_controller) {
+        g_controller->put_IsVisible(FALSE);
+    }
 
     std::wstring encoded = UrlEncode(query);
     std::wstring url = L"https://www.google.com/search?q=" + encoded + L"&hl=" + g_currentLang + L"&cs=1";
@@ -1368,12 +1440,6 @@ void InitWebView2(HWND hWnd) {
                             if (g_webview) {
                                 g_webview->AddRef();
 
-                                // Pre-registration of script on document created
-                                g_webview->AddScriptToExecuteOnDocumentCreated(
-                                    GOOGLE_OVERLAY_SCRIPT,
-                                    new AddScriptHandler()
-                                );
-
                                 // Intercept external links: open in system default browser
                                 g_webview->add_NewWindowRequested(
                                     new NewWindowHandler(
@@ -1407,7 +1473,6 @@ void InitWebView2(HWND hWnd) {
                                                 } else if (action == L"home") {
                                                     NavigateHome();
                                                 } else if (action == L"move") {
-                                                    // Seamless dragging
                                                     std::wstring dxStr = ExtractJsonField(msg, L"dx");
                                                     std::wstring dyStr = ExtractJsonField(msg, L"dy");
                                                     int dx = _wtoi(dxStr.c_str());
@@ -1417,7 +1482,6 @@ void InitWebView2(HWND hWnd) {
                                                     SetWindowPos(g_hWnd, nullptr, rc.left + dx, rc.top + dy, 0, 0,
                                                                  SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                                                 } else if (action == L"resize") {
-                                                    // Seamless resizing
                                                     std::wstring dwStr = ExtractJsonField(msg, L"dw");
                                                     std::wstring dhStr = ExtractJsonField(msg, L"dh");
                                                     int dw = _wtoi(dwStr.c_str());
@@ -1455,7 +1519,32 @@ void InitWebView2(HWND hWnd) {
                                     ), nullptr
                                 );
 
-                                // Bulletproof injection on NavigationCompleted as well!
+                                // Add Pre-Document Script: Hides raw Google UI before first frame paints!
+                                const wchar_t* PRE_STYLE_SCRIPT = LR"rawjs(
+                                (function() {
+                                  try {
+                                    if (!location.href.includes('/search')) return;
+                                    const css = 'html, body { background: #090e1a !important; color: #f8fafc !important; } #header, #tsf, #searchform, #gb, #hdtb, #hdtbSum, #appbar, .appbar, #top_nav, .s6JM6d, .minidiv, .sfbg, #taw, #topstuff, header, nav, [role="navigation"], hr { display: none !important; }';
+                                    function applyPre() {
+                                      const p = document.head || document.documentElement;
+                                      if (p && !document.getElementById('spotlight-pre-styles')) {
+                                        const s = document.createElement('style');
+                                        s.id = 'spotlight-pre-styles';
+                                        s.textContent = css;
+                                        p.appendChild(s);
+                                      }
+                                    }
+                                    applyPre();
+                                    if (document.readyState === 'loading') {
+                                      document.addEventListener('DOMContentLoaded', applyPre);
+                                    }
+                                  } catch(e) {}
+                                })();
+                                )rawjs";
+                                g_webview->AddScriptToExecuteOnDocumentCreated(PRE_STYLE_SCRIPT, nullptr);
+
+                                // Navigation Completed:
+                                // Clean the page, inject header, and reveal with ZERO flicker!
                                 g_webview->add_NavigationCompleted(
                                     new NavigationCompletedHandler(
                                         [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
@@ -1464,9 +1553,24 @@ void InitWebView2(HWND hWnd) {
                                             if (uri) {
                                                 std::wstring currentUrl = uri;
                                                 CoTaskMemFree(uri);
-                                                if (currentUrl.find(L"google.com/search") != std::wstring::npos) {
-                                                    sender->ExecuteScript(GOOGLE_OVERLAY_SCRIPT, nullptr);
+                                                if (currentUrl.find(L"/search") != std::wstring::npos) {
+                                                    sender->ExecuteScript(GOOGLE_OVERLAY_SCRIPT,
+                                                        new ExecuteScriptCompletedHandler(
+                                                            [](HRESULT res, LPCWSTR json) -> HRESULT {
+                                                                // Script execution finished: safe to reveal!
+                                                                if (g_controller) {
+                                                                    g_controller->put_IsVisible(TRUE);
+                                                                }
+                                                                return S_OK;
+                                                            }
+                                                        )
+                                                    );
+                                                    return S_OK;
                                                 }
+                                            }
+                                            // Page is now styled: reveal controller!
+                                            if (g_controller) {
+                                                g_controller->put_IsVisible(TRUE);
                                             }
                                             return S_OK;
                                         }
