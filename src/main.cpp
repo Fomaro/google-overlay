@@ -7,6 +7,7 @@
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <windowsx.h>
 #include <initguid.h>
 #include <shellapi.h>
 #include <dwmapi.h>
@@ -29,12 +30,13 @@ static NOTIFYICONDATAW g_nid = {};
 static bool g_isVisible = false;
 static std::wstring g_currentLang = L"en";
 static std::wstring g_currentQuery = L"";
+static int g_currentOpacity = 96;
 
 // WebView2 pointers
 static ICoreWebView2Controller* g_controller = nullptr;
 static ICoreWebView2* g_webview = nullptr;
 
-// Concrete COM Event Handlers for WebView2 with GCC
+// Concrete COM Handlers
 #define IMPLEMENT_COM_BASE(ClassName, InterfaceName) \
     LONG m_ref = 1; \
 public: \
@@ -105,6 +107,48 @@ public:
     }
 };
 
+// JSON Field Extractor
+std::wstring ExtractJsonField(const std::wstring& json, const std::wstring& key) {
+    std::wstring searchKey = L"\"" + key + L"\":";
+    size_t pos = json.find(searchKey);
+    if (pos == std::wstring::npos) {
+        searchKey = L"\"" + key + L"\": ";
+        pos = json.find(searchKey);
+        if (pos == std::wstring::npos) return L"";
+    }
+    pos += searchKey.length();
+    while (pos < json.length() && (json[pos] == L' ' || json[pos] == L'\t')) pos++;
+    if (pos >= json.length()) return L"";
+
+    if (json[pos] == L'\"') {
+        pos++;
+        std::wstring value;
+        while (pos < json.length()) {
+            if (json[pos] == L'\\') {
+                if (pos + 1 < json.length()) {
+                    pos++;
+                    if (json[pos] == L'\"') value += L'\"';
+                    else if (json[pos] == L'\\') value += L'\\';
+                    else if (json[pos] == L'n') value += L'\n';
+                    else if (json[pos] == L't') value += L'\t';
+                    else if (json[pos] == L'r') value += L'\r';
+                    else value += json[pos];
+                }
+            } else if (json[pos] == L'\"') {
+                break;
+            } else {
+                value += json[pos];
+            }
+            pos++;
+        }
+        return value;
+    } else {
+        size_t end = json.find_first_of(L",}\n\r", pos);
+        if (end == std::wstring::npos) end = json.length();
+        return json.substr(pos, end - pos);
+    }
+}
+
 // System language detection
 std::wstring DetectSystemLanguage() {
     LANGID langId = GetUserDefaultUILanguage() & 0xFF;
@@ -124,7 +168,6 @@ std::wstring UrlEncode(const std::wstring& str) {
         } else if (ch == L' ') {
             encoded += L'+';
         } else {
-            // Encode as UTF-8 bytes
             char utf8[8] = {0};
             wchar_t wstr[2] = {ch, 0};
             int len = WideCharToMultiByte(CP_UTF8, 0, wstr, 1, utf8, sizeof(utf8), nullptr, nullptr);
@@ -138,6 +181,52 @@ std::wstring UrlEncode(const std::wstring& str) {
     return encoded;
 }
 
+// Autostart with Windows Registry
+void SetAutostart(bool enable) {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        if (enable) {
+            wchar_t exePath[MAX_PATH];
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            RegSetValueExW(hKey, L"GoogleOverlay", 0, REG_SZ, (BYTE*)exePath, (DWORD)((wcslen(exePath) + 1) * sizeof(wchar_t)));
+        } else {
+            RegDeleteValueW(hKey, L"GoogleOverlay");
+        }
+        RegCloseKey(hKey);
+    }
+}
+
+bool IsAutostartEnabled() {
+    HKEY hKey;
+    bool enabled = false;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(hKey, L"GoogleOverlay", nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            enabled = true;
+        }
+        RegCloseKey(hKey);
+    }
+    return enabled;
+}
+
+// Opacity & Size
+void SetWindowOpacity(int percent) {
+    if (percent < 50) percent = 50;
+    if (percent > 100) percent = 100;
+    g_currentOpacity = percent;
+    BYTE alpha = (BYTE)((percent * 255) / 100);
+    SetLayeredWindowAttributes(g_hWnd, 0, alpha, LWA_ALPHA);
+}
+
+void SetWindowPresetSize(int w, int h) {
+    RECT rc;
+    GetWindowRect(g_hWnd, &rc);
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int x = (screenW - w) / 2;
+    int y = (screenH - h) / 2;
+    SetWindowPos(g_hWnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 // Forward declarations
 void ShowOverlay();
 void HideOverlay();
@@ -145,7 +234,7 @@ void ToggleOverlay();
 void NavigateHome();
 void PerformSearch(const std::wstring& query, const std::wstring& lang);
 
-// Embedded Launcher HTML with Glowing Aura & Rounded Corners
+// Embedded Launcher HTML with Glowing Aura, Draggable Header, Settings Panel
 static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 <!DOCTYPE html>
 <html lang="en">
@@ -176,20 +265,24 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border-radius: var(--radius);
       box-shadow: var(--glow-halo);
       border: 1px solid rgba(255, 255, 255, 0.1);
+      position: relative;
     }
+
     /* Top Drag Header */
     .header-bar {
-      height: 42px;
+      height: 44px;
       padding: 0 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: rgba(18, 25, 43, 0.6);
+      background: rgba(18, 25, 43, 0.65);
       backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border);
       cursor: grab;
-      -webkit-app-region: drag;
+      user-select: none;
     }
+    .header-bar:active { cursor: grabbing; }
+
     .brand {
       display: flex;
       align-items: center;
@@ -197,6 +290,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       font-size: 13px;
       font-weight: 600;
       letter-spacing: -0.2px;
+      pointer-events: none;
     }
     .sparkle {
       width: 14px;
@@ -208,8 +302,24 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     .actions {
       display: flex;
       align-items: center;
-      gap: 10px;
-      -webkit-app-region: no-drag;
+      gap: 8px;
+    }
+    .icon-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 8px;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+    }
+    .icon-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text);
     }
     .lang-chip {
       background: rgba(255, 255, 255, 0.06);
@@ -224,6 +334,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       align-items: center;
       gap: 4px;
       transition: all 0.15s ease;
+      height: 28px;
     }
     .lang-chip:hover {
       background: rgba(255, 255, 255, 0.12);
@@ -235,22 +346,25 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border: none;
       color: var(--text-subtle);
       cursor: pointer;
-      width: 26px;
-      height: 26px;
+      width: 28px;
+      height: 28px;
       border-radius: 6px;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     .close-btn:hover { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
     /* Content Area */
     .content {
       flex: 1;
-      padding: 28px 24px 20px 24px;
+      padding: 24px 24px 16px 24px;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 18px;
+      overflow-y: auto;
     }
+
     /* Search Bar */
     .search-wrap {
       display: flex;
@@ -259,7 +373,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 0 18px;
-      height: 62px;
+      height: 60px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
@@ -279,7 +393,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       background: transparent;
       border: none;
       outline: none;
-      font-size: 17px;
+      font-size: 16.5px;
       color: var(--text);
       font-family: inherit;
     }
@@ -291,7 +405,10 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       padding: 4px 8px;
       font-size: 11px;
       color: var(--text-muted);
+      cursor: pointer;
     }
+    .badge:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+
     /* Hero suggestions */
     .hero {
       flex: 1;
@@ -314,8 +431,8 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       color: #93c5fd;
     }
     .hero-title { font-size: 22px; font-weight: 600; }
-    .hero-sub { font-size: 14px; color: var(--text-muted); max-width: 500px; line-height: 1.5; }
-    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; max-width: 600px; }
+    .hero-sub { font-size: 13.5px; color: var(--text-muted); max-width: 500px; line-height: 1.5; }
+    .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; max-width: 620px; }
     .chip {
       background: rgba(255, 255, 255, 0.04);
       border: 1px solid var(--border);
@@ -332,9 +449,10 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       border-color: rgba(255, 255, 255, 0.16);
       transform: translateY(-1px);
     }
+
     /* Footer */
     .footer {
-      padding: 12px 24px;
+      padding: 10px 20px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -343,17 +461,128 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       font-size: 12px;
       color: var(--text-subtle);
     }
-    .footer-hints { display: flex; align-items: center; gap: 16px; }
+    .footer-hints { display: flex; align-items: center; gap: 14px; }
     .footer-hint-item { display: flex; align-items: center; gap: 6px; }
+
+    /* Resize grip */
+    .resize-grip {
+      width: 14px;
+      height: 14px;
+      opacity: 0.4;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: nwse-resize;
+    }
+
+    /* Settings Modal Panel */
+    .settings-panel {
+      position: absolute;
+      top: 44px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(9, 14, 26, 0.98);
+      backdrop-filter: blur(20px);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      padding: 24px;
+      gap: 20px;
+      overflow-y: auto;
+    }
+    .settings-panel.active { display: flex; }
+
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 14px;
+    }
+    .settings-title { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .settings-label { font-size: 13.5px; font-weight: 500; color: var(--text); display: flex; justify-content: space-between; align-items: center; }
+    .settings-sublabel { font-size: 12px; color: var(--text-muted); }
+    
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 6px;
+    }
+    input[type=range] {
+      flex: 1;
+      accent-color: #3b82f6;
+      cursor: pointer;
+    }
+    .preset-btns {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .preset-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .preset-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 42px;
+      height: 22px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .toggle-switch.on { background: #3b82f6; }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .toggle-switch.on::after { transform: translateX(20px); }
   </style>
 </head>
 <body>
-  <div class="header-bar">
+  <!-- Header with Drag Handler -->
+  <div class="header-bar" id="header-bar">
     <div class="brand">
       <span class="sparkle"></span>
       <span id="txt-title">Google AI Overlay</span>
     </div>
     <div class="actions">
+      <button class="icon-btn" id="btn-settings" onclick="toggleSettings()" title="Settings / Настройки">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
       <button class="lang-chip" id="lang-btn" onclick="toggleLang()">
         <span id="lbl-ru">RU</span>
         <span style="opacity: 0.3">/</span>
@@ -368,6 +597,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     </div>
   </div>
 
+  <!-- Main Content -->
   <div class="content">
     <div class="search-wrap">
       <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -375,7 +605,7 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
       <input type="text" id="input" class="search-input" placeholder="Ask Google AI anything..." autofocus autocomplete="off" />
-      <span class="badge">↵ Enter</span>
+      <span class="badge" onclick="doSearch()">↵ Enter</span>
     </div>
 
     <div class="hero">
@@ -391,6 +621,73 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     </div>
   </div>
 
+  <!-- Settings Panel -->
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-header">
+      <div class="settings-title">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span id="txt-settings-heading">Settings</span>
+      </div>
+      <button class="icon-btn" onclick="toggleSettings()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Opacity -->
+    <div class="settings-group">
+      <div class="settings-label">
+        <span id="txt-lbl-opacity">Window Opacity</span>
+        <span id="val-opacity" style="color: #60a5fa; font-weight: 600;">96%</span>
+      </div>
+      <div class="settings-sublabel" id="txt-sub-opacity">Adjust overlay transparency on desktop</div>
+      <div class="slider-row">
+        <input type="range" id="slider-opacity" min="60" max="100" value="96" oninput="changeOpacity(this.value)" />
+      </div>
+    </div>
+
+    <!-- Size Presets -->
+    <div class="settings-group">
+      <div class="settings-label">
+        <span id="txt-lbl-size">Window Size Presets</span>
+      </div>
+      <div class="settings-sublabel" id="txt-sub-size">Resize from edges freely, or pick a standard preset</div>
+      <div class="preset-btns">
+        <button class="preset-btn" onclick="setSize(720, 520)">Compact (720x520)</button>
+        <button class="preset-btn" onclick="setSize(820, 600)">Standard (820x600)</button>
+        <button class="preset-btn" onclick="setSize(960, 680)">Wide (960x680)</button>
+      </div>
+    </div>
+
+    <!-- Autostart -->
+    <div class="settings-group">
+      <div class="toggle-row">
+        <div>
+          <div class="settings-label" id="txt-lbl-autostart">Launch on Windows Startup</div>
+          <div class="settings-sublabel" id="txt-sub-autostart">Run automatically in background on login</div>
+        </div>
+        <div class="toggle-switch" id="switch-autostart" onclick="toggleAutostart()"></div>
+      </div>
+    </div>
+
+    <!-- Hotkey Info -->
+    <div class="settings-group">
+      <div class="toggle-row">
+        <div>
+          <div class="settings-label" id="txt-lbl-hotkey">Global Hotkey</div>
+          <div class="settings-sublabel" id="txt-sub-hotkey">Summons or hides the overlay anytime</div>
+        </div>
+        <span class="badge" style="font-size: 12px; font-weight: 600; padding: 6px 12px;">Alt + Space</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Bar (Cleaned, No C++ text) -->
   <div class="footer">
     <div class="footer-hints">
       <span class="footer-hint-item">
@@ -406,17 +703,25 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
         <span id="txt-hint-blur">Dismisses</span>
       </span>
     </div>
-    <div style="font-size: 11px; color: var(--text-subtle);">C++ Native Fast Overlay</div>
+    <!-- Visual Resize Grip -->
+    <div class="resize-grip" title="Resize window">
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <circle cx="8" cy="8" r="1.3" fill="#64748b"/>
+        <circle cx="4" cy="8" r="1.3" fill="#64748b"/>
+        <circle cx="8" cy="4" r="1.3" fill="#64748b"/>
+      </svg>
+    </div>
   </div>
 
   <script>
     let currentLang = 'en';
+    let isAutostart = false;
 
     const suggestions = {
       en: [
         "Explain quantum computing simply",
         "Python list comprehension examples",
-        "James Webb telescope latest findings",
+        "James Webb telescope latest discoveries",
         "Docker vs Podman key differences"
       ],
       ru: [
@@ -429,8 +734,35 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 
     function postAction(action, data = {}) {
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(JSON.stringify({ action: action, ...data }));
+        window.chrome.webview.postMessage({ action: action, ...data });
       }
+    }
+
+    // Window Dragging: Triggered when mouse is down on header bar
+    document.getElementById('header-bar').addEventListener('mousedown', (e) => {
+      if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
+        postAction('drag');
+      }
+    });
+
+    function toggleSettings() {
+      const panel = document.getElementById('settings-panel');
+      panel.classList.toggle('active');
+    }
+
+    function changeOpacity(val) {
+      document.getElementById('val-opacity').innerText = val + '%';
+      postAction('set_opacity', { opacity: parseInt(val) });
+    }
+
+    function setSize(w, h) {
+      postAction('set_size', { width: w, height: h });
+    }
+
+    function toggleAutostart() {
+      isAutostart = !isAutostart;
+      document.getElementById('switch-autostart').className = 'toggle-switch ' + (isAutostart ? 'on' : '');
+      postAction('set_autostart', { enable: isAutostart });
     }
 
     function updateLanguageUI() {
@@ -444,6 +776,17 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
       document.getElementById('txt-hint-summon').innerText = isRu ? 'Вызов' : 'Summon';
       document.getElementById('txt-hint-hide').innerText = isRu ? 'Скрыть' : 'Hide';
       document.getElementById('txt-hint-blur').innerText = isRu ? 'Клик мимо скрывает' : 'Dismisses';
+
+      // Settings Strings
+      document.getElementById('txt-settings-heading').innerText = isRu ? 'Настройки' : 'Settings';
+      document.getElementById('txt-lbl-opacity').innerText = isRu ? 'Прозрачность окна' : 'Window Opacity';
+      document.getElementById('txt-sub-opacity').innerText = isRu ? 'Регулировка прозрачности оверлея на рабочем столе' : 'Adjust overlay transparency on desktop';
+      document.getElementById('txt-lbl-size').innerText = isRu ? 'Размеры окна' : 'Window Size Presets';
+      document.getElementById('txt-sub-size').innerText = isRu ? 'Тяните за края для любого размера или выберите готовый' : 'Resize from edges freely, or pick a standard preset';
+      document.getElementById('txt-lbl-autostart').innerText = isRu ? 'Автозапуск при старте Windows' : 'Launch on Windows Startup';
+      document.getElementById('txt-sub-autostart').innerText = isRu ? 'Запуск в фоне при входе в систему' : 'Run automatically in background on login';
+      document.getElementById('txt-lbl-hotkey').innerText = isRu ? 'Горячая клавиша' : 'Global Hotkey';
+      document.getElementById('txt-sub-hotkey').innerText = isRu ? 'Открывает или скрывает оверлей в любой момент' : 'Summons or hides the overlay anytime';
 
       const list = suggestions[currentLang] || suggestions.en;
       const container = document.getElementById('chips');
@@ -480,17 +823,27 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') postAction('hide');
+      if (e.key === 'Escape') {
+        const panel = document.getElementById('settings-panel');
+        if (panel.classList.contains('active')) {
+          panel.classList.remove('active');
+        } else {
+          postAction('hide');
+        }
+      }
     });
 
-    // Receive state from C++
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.addEventListener('message', (e) => {
         try {
-          const msg = JSON.parse(e.data);
+          const msg = e.data;
           if (msg.lang) {
             currentLang = msg.lang;
             updateLanguageUI();
+          }
+          if (msg.autostart !== undefined) {
+            isAutostart = msg.autostart;
+            document.getElementById('switch-autostart').className = 'toggle-switch ' + (isAutostart ? 'on' : '');
           }
         } catch (err) {}
       });
@@ -502,12 +855,11 @@ static const wchar_t* LAUNCHER_HTML = LR"rawhtml(
 </html>
 )rawhtml";
 
-// JavaScript injected into Google Search pages to clean the view and add sticky header
+// JavaScript injected into Google Search pages with Draggable Sticky Header
 static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
 (function() {
   if (document.getElementById('spotlight-injected-header')) return;
 
-  // 1. Inject Stylesheet
   const style = document.createElement('style');
   style.id = 'spotlight-clean-styles';
   style.textContent = `
@@ -599,7 +951,10 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
       align-items: center !important;
       justify-content: center !important;
       padding: 0 16px !important;
+      cursor: grab !important;
     }
+    #spotlight-injected-header:active { cursor: grabbing !important; }
+
     .spotlight-inner {
       width: 100% !important; max-width: 760px !important;
       display: flex !important; align-items: center !important; gap: 12px !important;
@@ -642,7 +997,6 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
   const header = document.createElement('div');
   header.id = 'spotlight-injected-header';
   
-  // Extract query from URL
   const params = new URLSearchParams(window.location.search);
   const q = params.get('q') || '';
   const lang = params.get('hl') || 'en';
@@ -667,7 +1021,15 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
   `;
   document.body.prepend(header);
 
-  // Event handlers
+  // Drag Support on injected header
+  header.addEventListener('mousedown', (e) => {
+    if (e.button === 0 && !e.target.closest('button') && !e.target.closest('input')) {
+      if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage({ action: 'drag' });
+      }
+    }
+  });
+
   const field = document.getElementById('spotlight-field');
   field.focus();
   field.select();
@@ -676,31 +1038,31 @@ static const wchar_t* INJECT_GOOGLE_SCRIPT = LR"rawjs(
     if (e.key === 'Enter') {
       const val = field.value.trim();
       if (val && window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(JSON.stringify({ action: 'search', query: val, lang: lang }));
+        window.chrome.webview.postMessage({ action: 'search', query: val, lang: lang });
       }
     } else if (e.key === 'Escape') {
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(JSON.stringify({ action: 'hide' }));
+        window.chrome.webview.postMessage({ action: 'hide' });
       }
     }
   });
 
   document.getElementById('spotlight-home').onclick = () => {
     if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage(JSON.stringify({ action: 'home' }));
+      window.chrome.webview.postMessage({ action: 'home' });
     }
   };
 
   document.getElementById('spotlight-close').onclick = () => {
     if (window.chrome && window.chrome.webview) {
-      window.chrome.webview.postMessage(JSON.stringify({ action: 'hide' }));
+      window.chrome.webview.postMessage({ action: 'hide' });
     }
   };
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (window.chrome && window.chrome.webview) {
-        window.chrome.webview.postMessage(JSON.stringify({ action: 'hide' }));
+        window.chrome.webview.postMessage({ action: 'hide' });
       }
     }
   });
@@ -750,18 +1112,29 @@ void PerformSearch(const std::wstring& query, const std::wstring& lang) {
     g_webview->Navigate(url.c_str());
 }
 
-// System Tray Setup
+// System Tray Setup with Startup Toast Notification
 void SetupTrayIcon(HWND hWnd) {
     g_nid.cbSize = sizeof(NOTIFYICONDATAW);
     g_nid.hWnd = hWnd;
     g_nid.uID = 1;
-    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO;
     g_nid.uCallbackMessage = WM_TRAYICON;
     g_nid.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
     if (!g_nid.hIcon) {
         g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     }
     wcscpy_s(g_nid.szTip, L"Google AI Overlay (Alt+Space)");
+
+    // Toast Notification in bottom-right corner
+    g_nid.dwInfoFlags = NIIF_INFO;
+    if (g_currentLang == L"ru") {
+        wcscpy_s(g_nid.szInfoTitle, L"Google AI Overlay");
+        wcscpy_s(g_nid.szInfo, L"Приложение запущено! Нажмите Alt + Space для быстрого поиска.");
+    } else {
+        wcscpy_s(g_nid.szInfoTitle, L"Google AI Overlay");
+        wcscpy_s(g_nid.szInfo, L"Overlay is running! Press Alt + Space for instant search.");
+    }
+
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
 
@@ -793,6 +1166,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             ToggleOverlay();
         }
         return 0;
+
+    case WM_NCCALCSIZE:
+        // Allow custom frameless window while retaining native resizability
+        if (wParam == TRUE) {
+            return 0;
+        }
+        break;
+
+    case WM_NCHITTEST: {
+        // 8-directional smooth border and corner resizing
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        RECT rc;
+        GetWindowRect(hWnd, &rc);
+        int border = 8;
+
+        bool left = (pt.x >= rc.left && pt.x <= rc.left + border);
+        bool right = (pt.x >= rc.right - border && pt.x <= rc.right);
+        bool top = (pt.y >= rc.top && pt.y <= rc.top + border);
+        bool bottom = (pt.y >= rc.bottom - border && pt.y <= rc.bottom);
+
+        if (top && left) return HTTOPLEFT;
+        if (top && right) return HTTOPRIGHT;
+        if (bottom && left) return HTBOTTOMLEFT;
+        if (bottom && right) return HTBOTTOMRIGHT;
+        if (left) return HTLEFT;
+        if (right) return HTRIGHT;
+        if (top) return HTTOP;
+        if (bottom) return HTBOTTOM;
+
+        return HTCLIENT;
+    }
 
     case WM_ACTIVATE:
         // Automatically hide to tray when user clicks outside the overlay window
@@ -912,23 +1316,38 @@ void InitWebView2(HWND hWnd) {
                                                 std::wstring msg = jsonMsg;
                                                 CoTaskMemFree(jsonMsg);
 
-                                                if (msg.find(L"\"action\":\"hide\"") != std::wstring::npos) {
+                                                std::wstring action = ExtractJsonField(msg, L"action");
+
+                                                if (action == L"hide") {
                                                     HideOverlay();
-                                                } else if (msg.find(L"\"action\":\"home\"") != std::wstring::npos) {
+                                                } else if (action == L"home") {
                                                     NavigateHome();
-                                                } else if (msg.find(L"\"action\":\"set_lang\"") != std::wstring::npos) {
-                                                    if (msg.find(L"\"ru\"") != std::wstring::npos) g_currentLang = L"ru";
-                                                    else g_currentLang = L"en";
-                                                } else if (msg.find(L"\"action\":\"search\"") != std::wstring::npos) {
-                                                    // Parse query
-                                                    size_t qPos = msg.find(L"\"query\":\"");
-                                                    if (qPos != std::wstring::npos) {
-                                                        qPos += 9;
-                                                        size_t qEnd = msg.find(L"\"", qPos);
-                                                        if (qEnd != std::wstring::npos) {
-                                                            std::wstring query = msg.substr(qPos, qEnd - qPos);
-                                                            PerformSearch(query, g_currentLang);
-                                                        }
+                                                } else if (action == L"drag") {
+                                                    // Window Dragging via Win32 Caption Move
+                                                    ReleaseCapture();
+                                                    SendMessageW(g_hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                                                } else if (action == L"set_opacity") {
+                                                    std::wstring opStr = ExtractJsonField(msg, L"opacity");
+                                                    if (!opStr.empty()) {
+                                                        SetWindowOpacity(_wtoi(opStr.c_str()));
+                                                    }
+                                                } else if (action == L"set_size") {
+                                                    std::wstring wStr = ExtractJsonField(msg, L"width");
+                                                    std::wstring hStr = ExtractJsonField(msg, L"height");
+                                                    if (!wStr.empty() && !hStr.empty()) {
+                                                        SetWindowPresetSize(_wtoi(wStr.c_str()), _wtoi(hStr.c_str()));
+                                                    }
+                                                } else if (action == L"set_autostart") {
+                                                    std::wstring enableStr = ExtractJsonField(msg, L"enable");
+                                                    SetAutostart(enableStr == L"true");
+                                                } else if (action == L"set_lang") {
+                                                    std::wstring lang = ExtractJsonField(msg, L"lang");
+                                                    if (!lang.empty()) g_currentLang = lang;
+                                                } else if (action == L"search") {
+                                                    std::wstring query = ExtractJsonField(msg, L"query");
+                                                    std::wstring lang = ExtractJsonField(msg, L"lang");
+                                                    if (!query.empty()) {
+                                                        PerformSearch(query, lang.empty() ? g_currentLang : lang);
                                                     }
                                                 }
                                             }
@@ -992,17 +1411,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     int posX = (screenW - width) / 2;
     int posY = (screenH - height) / 2;
 
-    // Create Frameless Floating TopMost Window
+    // Create Frameless Floating TopMost Window with Resizable Frame & Layered Opacity
     g_hWnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         wc.lpszClassName,
         L"Google AI Overlay",
-        WS_POPUP,
+        WS_POPUP | WS_THICKFRAME,
         posX, posY, width, height,
         nullptr, nullptr, hInstance, nullptr
     );
 
     if (!g_hWnd) return 1;
+
+    // Initial Opacity (96%)
+    SetWindowOpacity(g_currentOpacity);
 
     // Apply Windows 11 DWM Smooth Rounded Corners (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
     DWORD cornerPreference = 2;
@@ -1012,7 +1434,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     MARGINS margins = { 1, 1, 1, 1 };
     DwmExtendFrameIntoClientArea(g_hWnd, &margins);
 
-    // Setup Tray and Global Hotkey (Alt + Space)
+    // Setup Tray and Startup Notification
     SetupTrayIcon(g_hWnd);
     RegisterHotKey(g_hWnd, HOTKEY_ID, MOD_ALT, VK_SPACE);
 
